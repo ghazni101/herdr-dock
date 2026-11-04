@@ -3692,9 +3692,10 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn api_pane_move_to_new_tab_adds_the_dock_slot() {
+    #[tokio::test]
+    async fn api_pane_move_to_new_tab_adds_the_dock_slot() {
         let (mut app, public_pane_id) = app_with_test_workspace();
+        app.state.default_shell = crate::app::exiting_test_command().into();
         dock_first_tab(&mut app);
         let moved = app.state.workspaces[0].tabs[0].root_pane;
 
@@ -3716,11 +3717,13 @@ mod tests {
         assert_eq!(app.state.workspaces[0].tabs[0].root_pane, moved);
         assert_eq!(dock_flags(&app, 0, 0), vec![true, false]);
         assert_eq!(app.state.workspaces[0].tabs[0].layout.focused(), moved);
+        crate::app::api::test_support::shutdown_test_runtimes(&mut app);
     }
 
-    #[test]
-    fn api_pane_move_to_new_workspace_adds_the_dock_slot() {
+    #[tokio::test]
+    async fn api_pane_move_to_new_workspace_adds_the_dock_slot() {
         let (mut app, public_pane_id) = app_with_test_workspace();
+        app.state.default_shell = crate::app::exiting_test_command().into();
         dock_first_tab(&mut app);
         let moved = app.state.workspaces[0].tabs[0].root_pane;
 
@@ -3741,6 +3744,7 @@ mod tests {
         let ws_idx = app.state.workspaces.len() - 1;
         assert_eq!(app.state.workspaces[ws_idx].tabs[0].root_pane, moved);
         assert_eq!(dock_flags(&app, ws_idx, 0), vec![true, false]);
+        crate::app::api::test_support::shutdown_test_runtimes(&mut app);
     }
 
     #[test]
@@ -3781,9 +3785,10 @@ mod tests {
         assert_eq!(dock_flags(&app, 0, 0), vec![true, false]);
     }
 
-    #[test]
-    fn api_pane_move_out_of_a_docked_tab_closes_the_tab() {
+    #[tokio::test]
+    async fn api_pane_move_out_of_a_docked_tab_closes_the_tab() {
         let (mut app, public_pane_id) = app_with_test_workspace();
+        app.state.default_shell = crate::app::exiting_test_command().into();
         let dock = dock_first_tab(&mut app);
         let dock_terminal = app.state.workspaces[0].tabs[0]
             .terminal_id(dock)
@@ -3808,6 +3813,7 @@ mod tests {
         assert!(app.state.workspaces[0].tabs[0].terminal_id(dock).is_none());
         assert!(app.state.terminals.get(&dock_terminal).is_none());
         assert_eq!(dock_flags(&app, 0, 0), vec![true, false]);
+        crate::app::api::test_support::shutdown_test_runtimes(&mut app);
     }
 
     #[tokio::test]

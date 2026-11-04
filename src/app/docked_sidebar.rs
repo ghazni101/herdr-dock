@@ -16,7 +16,7 @@ use crate::layout::{Node, PaneId};
 const DEFAULT_DOCK_COLUMNS: f32 = 26.0;
 
 impl App {
-    fn pane_is_dock_slot(&self, ws_idx: usize, pane_id: PaneId) -> bool {
+    pub(super) fn pane_is_dock_slot(&self, ws_idx: usize, pane_id: PaneId) -> bool {
         self.state.pane_is_dock_slot(ws_idx, pane_id)
     }
 
