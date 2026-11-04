@@ -89,27 +89,26 @@ impl App {
                 ratio: 1.0 - ratio,
             });
         let cwd = self.launch_cwd_for_pane_in_workspace(ws_idx, main);
-        let default_shell = self.state.default_shell.clone();
         let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
         let host_terminal_theme = self.state.host_terminal_theme;
         let host_terminal_appearance = self.pane_host_terminal_appearance();
-        let shell_mode = self.state.shell_mode;
+        let placeholder_argv = dock_slot_argv();
         let split = self
             .state
             .workspaces
             .get_mut(ws_idx)?
-            .split_pane_with_ratio(
+            .split_pane_argv_command_with_ratio(
                 main,
                 Direction::Horizontal,
                 ratio,
                 rows,
                 cols,
                 cwd,
+                &placeholder_argv,
+                Vec::new(),
                 scrollback_limit_bytes,
                 host_terminal_theme,
                 host_terminal_appearance,
-                crate::pane::PaneShellConfig::new(&default_shell, shell_mode),
-                Vec::new(),
                 false,
             );
         let new_pane = match split? {
@@ -135,6 +134,26 @@ impl App {
             tab.layout.swap_panes(main, dock);
         }
         Some(dock)
+    }
+}
+
+/// The dock slot is client chrome, not a terminal the user can reach: the
+/// client only paints the sidebar over it. Spawn an inert placeholder so every
+/// tab does not pay for a second interactive shell that can source rc files or
+/// be detected as an agent.
+fn dock_slot_argv() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        vec![
+            "cmd.exe".to_string(),
+            "/D".to_string(),
+            "/C".to_string(),
+            "pause >NUL".to_string(),
+        ]
+    }
+    #[cfg(not(windows))]
+    {
+        vec!["sleep".to_string(), "2147483647".to_string()]
     }
 }
 
@@ -226,6 +245,18 @@ mod tests {
         (panes, ratio)
     }
 
+    #[cfg(unix)]
+    fn dock_launch_argv(app: &App, ws_idx: usize, tab_idx: usize) -> Option<Vec<String>> {
+        let tab = &app.state.workspaces[ws_idx].tabs[tab_idx];
+        let dock = tab
+            .layout
+            .pane_ids()
+            .into_iter()
+            .find(|pane_id| app.pane_is_dock_slot(ws_idx, *pane_id))?;
+        let terminal_id = tab.terminal_id(dock)?;
+        app.state.terminals.get(terminal_id)?.launch_argv.clone()
+    }
+
     fn create_tab(app: &mut App) -> usize {
         let response = app.handle_api_request(Request {
             id: "req".into(),
@@ -285,6 +316,23 @@ mod tests {
         let (panes, ratio) = tab_shape(&app, 0, tab_idx);
         assert_eq!(panes, vec![(true, false), (false, true)]);
         assert_eq!(ratio, Some(0.2));
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn new_tab_dock_slot_runs_a_placeholder_not_a_shell() {
+        let mut app = app();
+        dock_first_space(&mut app, 0.2);
+
+        let tab_idx = create_tab(&mut app);
+        let workspace_idx = create_workspace(&mut app);
+
+        let tab_argv = dock_launch_argv(&app, 0, tab_idx).expect("dock slot should run a command");
+        assert_eq!(tab_argv.first().map(String::as_str), Some("sleep"));
+        let workspace_argv =
+            dock_launch_argv(&app, workspace_idx, 0).expect("dock slot should run a command");
+        assert_eq!(workspace_argv.first().map(String::as_str), Some("sleep"));
         shutdown_test_runtimes(&mut app);
     }
 
