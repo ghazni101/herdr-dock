@@ -593,6 +593,9 @@ impl App {
         };
 
         let cwd = terminal.cwd.clone();
+        let dock_argv = (terminal.manual_label.as_deref()
+            == Some(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL))
+        .then(crate::app::dock_slot_argv);
         let (rows, cols) = self
             .terminal_runtimes
             .get(&terminal_id)
@@ -607,20 +610,38 @@ impl App {
         let Some(launch_env) = self.pane_launch_env(ws_idx, pane_id, Vec::new()) else {
             return false;
         };
-        let runtime = match crate::terminal::TerminalRuntime::spawn(
-            pane_id,
-            rows,
-            cols,
-            cwd,
-            self.state.pane_scrollback_limit_bytes,
-            self.state.host_terminal_theme,
-            self.pane_host_terminal_appearance(),
-            crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode),
-            &launch_env,
-            self.event_tx.clone(),
-            self.render_notify.clone(),
-            self.render_dirty.clone(),
-        ) {
+        let runtime = match dock_argv.as_deref() {
+            Some(argv) => crate::terminal::TerminalRuntime::spawn_argv_command(
+                pane_id,
+                rows,
+                cols,
+                cwd,
+                argv,
+                &launch_env,
+                crate::pane::AgentDetection::Enabled,
+                self.state.pane_scrollback_limit_bytes,
+                self.state.host_terminal_theme,
+                self.pane_host_terminal_appearance(),
+                self.event_tx.clone(),
+                self.render_notify.clone(),
+                self.render_dirty.clone(),
+            ),
+            None => crate::terminal::TerminalRuntime::spawn(
+                pane_id,
+                rows,
+                cols,
+                cwd,
+                self.state.pane_scrollback_limit_bytes,
+                self.state.host_terminal_theme,
+                self.pane_host_terminal_appearance(),
+                crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode),
+                &launch_env,
+                self.event_tx.clone(),
+                self.render_notify.clone(),
+                self.render_dirty.clone(),
+            ),
+        };
+        let runtime = match runtime {
             Ok(runtime) => runtime,
             Err(err) => {
                 tracing::warn!(
@@ -636,6 +657,9 @@ impl App {
         self.terminal_runtimes.insert(terminal_id.clone(), runtime);
         if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
             terminal.clear_agent_runtime_identity_after_respawn();
+            if let Some(argv) = dock_argv {
+                terminal.launch_argv = Some(argv);
+            }
         }
         if focus_pane {
             self.state.focus_pane_in_workspace(ws_idx, pane_id);
@@ -2329,6 +2353,55 @@ mod tests {
         assert!(!terminal.respawn_shell_on_exit);
         assert!(terminal.persisted_agent_session.is_none());
         assert!(terminal.agent_name.is_none());
+        assert!(terminal.launch_argv.is_none());
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+    }
+
+    #[tokio::test]
+    async fn pane_died_respawns_the_dock_slot_as_a_placeholder() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let workspace = crate::workspace::Workspace::test_new("dock");
+        app.state.default_shell = test_support::exiting_test_command().into();
+        let pane_id = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane_id).cloned().unwrap();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test terminal should exist")
+            .set_manual_label(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL.into());
+
+        assert!(app.respawn_shell_for_launch_pane(pane_id, false));
+
+        let terminal = app
+            .state
+            .terminals
+            .get(&terminal_id)
+            .expect("terminal should survive respawn");
+        assert!(
+            terminal.launch_argv.is_some(),
+            "the dock slot must respawn its placeholder command, not the login shell"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            terminal
+                .launch_argv
+                .as_deref()
+                .and_then(|argv| argv.first())
+                .map(String::as_str),
+            Some("sleep")
+        );
 
         for (_, runtime) in app.terminal_runtimes.drain() {
             runtime.shutdown();

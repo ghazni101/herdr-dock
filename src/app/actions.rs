@@ -2071,13 +2071,43 @@ impl AppState {
 
         let pane_terminal_id = self.terminal_id_for_pane(ws_idx, pane_id);
         let workspace_terminal_ids = self.terminal_ids_for_workspace(ws_idx);
+        let tab_idx = self.workspaces[ws_idx].find_tab_index_for_pane(pane_id);
+        let remaining = tab_idx
+            .map(|tab_idx| {
+                self.workspaces[ws_idx].tabs[tab_idx]
+                    .layout
+                    .pane_ids()
+                    .into_iter()
+                    .filter(|pane| *pane != pane_id)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let closes_tab = tab_idx.is_some_and(|tab_idx| {
+            self.workspaces[ws_idx].tabs[tab_idx].layout.pane_count() <= 1
+                || self.tab_left_with_only_dock_slots(ws_idx, tab_idx, pane_id)
+        });
+        let slot_panes = remaining
+            .iter()
+            .copied()
+            .filter(|pane| self.pane_is_dock_slot(ws_idx, *pane))
+            .collect::<Vec<_>>();
+        let closed_tab_terminal_ids = if closes_tab {
+            tab_idx
+                .map(|tab_idx| self.terminal_ids_for_tab(ws_idx, tab_idx))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         self.pane_id_aliases.retain(|_, alias| *alias != pane_id);
         self.public_pane_id_aliases
             .retain(|_, alias| *alias != pane_id);
         let should_close_workspace = {
             let ws = &mut self.workspaces[ws_idx];
-            ws.remove_pane(pane_id)
+            ws.remove_pane(pane_id, |pane| slot_panes.contains(&pane))
         };
+        if closes_tab {
+            self.remove_plugin_pane_records(slot_panes);
+        }
         self.mark_session_dirty();
 
         if should_close_workspace {
@@ -2115,6 +2145,8 @@ impl AppState {
                     self.selected = self.workspaces.len() - 1;
                 }
             }
+        } else if closes_tab {
+            self.remove_unattached_terminal_ids(closed_tab_terminal_ids);
         } else {
             self.remove_unattached_terminal_ids(pane_terminal_id);
         }

@@ -1,5 +1,11 @@
 use serde::{Deserialize, Serialize};
 
+/// Label of the pane that serves as the docked-sidebar slot (fork feature, see
+/// `ServerCapabilities::docked_sidebar`). The client paints its sidebar over
+/// the labelled pane, and the server gives new spaces and tabs the same slot
+/// once the session uses it.
+pub const DOCKED_SIDEBAR_PANE_LABEL: &str = "herdr:sidebar";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct PingParams {}
 

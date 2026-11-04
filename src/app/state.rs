@@ -935,13 +935,51 @@ impl AppState {
         crate::ui::new_layout_terminal_sizes(self, self.new_pane_area(), layout)
     }
 
-    fn new_pane_area(&self) -> Rect {
+    pub(crate) fn new_pane_area(&self) -> Rect {
         let area = self.view.terminal_area;
         if area.width == 0 || area.height == 0 {
             Rect::new(0, 0, self.headless_size.0, self.headless_size.1)
         } else {
             area
         }
+    }
+
+    pub(crate) fn pane_is_dock_slot(&self, ws_idx: usize, pane_id: PaneId) -> bool {
+        self.workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.terminal_id(pane_id))
+            .and_then(|terminal_id| self.terminals.get(terminal_id))
+            .is_some_and(|terminal| {
+                terminal.manual_label.as_deref()
+                    == Some(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL)
+            })
+    }
+
+    /// True when removing `closing` would leave the tab with panes but only
+    /// docked-sidebar slots, i.e. no pane the user can reach.
+    pub(crate) fn tab_left_with_only_dock_slots(
+        &self,
+        ws_idx: usize,
+        tab_idx: usize,
+        closing: PaneId,
+    ) -> bool {
+        let Some(tab) = self
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.tabs.get(tab_idx))
+        else {
+            return false;
+        };
+        let remaining = tab
+            .layout
+            .pane_ids()
+            .into_iter()
+            .filter(|pane_id| *pane_id != closing)
+            .collect::<Vec<_>>();
+        !remaining.is_empty()
+            && remaining
+                .iter()
+                .all(|pane_id| self.pane_is_dock_slot(ws_idx, *pane_id))
     }
 
     /// Returns true when the given (workspace, tab, pane) refers to the

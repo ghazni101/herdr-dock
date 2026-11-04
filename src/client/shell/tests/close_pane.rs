@@ -290,3 +290,39 @@ fn ordinary_pane_close_stays_immediate_with_another_pane() {
         assert!(state.overlay.is_none());
     }
 }
+
+#[test]
+fn last_user_pane_close_in_a_docked_tab_waits_for_confirmation() {
+    for menu in [false, true] {
+        let mut state = close_state(true, 1);
+        let mut projected = state.snapshot.as_deref().unwrap().clone();
+        let mut dock = projected.panes[0].clone();
+        dock.pane_id = "pane_dock".into();
+        dock.label = Some(DOCKED_SIDEBAR_LABEL.into());
+        dock.focused = false;
+        projected.panes.push(dock);
+        state.set_snapshot(Box::new(projected));
+        state.compose(106, 24).unwrap();
+
+        let requested = request_close(&mut state, menu);
+        assert_no_close(&requested);
+        assert!(requested.repaint);
+        assert!(matches!(
+            state.overlay,
+            Some(ClientShellOverlay::ConfirmClose(_))
+        ));
+        let frame = state.compose(106, 24).unwrap();
+        let text = frame_rows(&frame).join("\n");
+        assert!(text.contains("Close workspace?"));
+        assert!(text.contains("1 pane"));
+
+        let accepted = if menu {
+            let primary = state.hits.overlay_primary;
+            click(&mut state, primary)
+        } else {
+            state.handle_input_bytes(b"\r")
+        };
+        assert_pane_close(&accepted);
+        assert!(state.overlay.is_none());
+    }
+}
