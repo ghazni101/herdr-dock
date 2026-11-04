@@ -634,6 +634,38 @@ fn restore_tab(
         }
 
         let dock_argv = dock_slot.then(crate::app::dock_slot_argv);
+        let spawn_restored = |dock_argv: Option<&[String]>| match dock_argv {
+            Some(argv) => TerminalRuntime::spawn_argv_command(
+                *id,
+                rows,
+                cols,
+                cwd.clone(),
+                argv,
+                &launch_env,
+                crate::pane::AgentDetection::Enabled,
+                runtime_context.scrollback_limit_bytes,
+                crate::terminal_theme::TerminalTheme::default(),
+                None,
+                runtime_context.events.clone(),
+                runtime_context.render_notify.clone(),
+                runtime_context.render_dirty.clone(),
+            ),
+            None => TerminalRuntime::spawn_with_initial_history(
+                *id,
+                rows,
+                cols,
+                cwd.clone(),
+                runtime_context.scrollback_limit_bytes,
+                crate::terminal_theme::TerminalTheme::default(),
+                None,
+                runtime_context.shell_config,
+                &launch_env,
+                startup.initial_history_ansi,
+                runtime_context.events.clone(),
+                runtime_context.render_notify.clone(),
+                runtime_context.render_dirty.clone(),
+            ),
+        };
         let runtime_result = {
             #[cfg(unix)]
             if let Some(imported) = imported_runtime {
@@ -649,75 +681,13 @@ fn restore_tab(
                     runtime_context.render_notify.clone(),
                     runtime_context.render_dirty.clone(),
                 )
-            } else if let Some(argv) = dock_argv.as_deref() {
-                TerminalRuntime::spawn_argv_command(
-                    *id,
-                    rows,
-                    cols,
-                    cwd.clone(),
-                    argv,
-                    &launch_env,
-                    crate::pane::AgentDetection::Enabled,
-                    runtime_context.scrollback_limit_bytes,
-                    crate::terminal_theme::TerminalTheme::default(),
-                    None,
-                    runtime_context.events.clone(),
-                    runtime_context.render_notify.clone(),
-                    runtime_context.render_dirty.clone(),
-                )
             } else {
-                TerminalRuntime::spawn_with_initial_history(
-                    *id,
-                    rows,
-                    cols,
-                    cwd.clone(),
-                    runtime_context.scrollback_limit_bytes,
-                    crate::terminal_theme::TerminalTheme::default(),
-                    None,
-                    runtime_context.shell_config,
-                    &launch_env,
-                    startup.initial_history_ansi,
-                    runtime_context.events.clone(),
-                    runtime_context.render_notify.clone(),
-                    runtime_context.render_dirty.clone(),
-                )
+                spawn_restored(dock_argv.as_deref())
             }
 
             #[cfg(not(unix))]
             {
-                if let Some(argv) = dock_argv.as_deref() {
-                    TerminalRuntime::spawn_argv_command(
-                        *id,
-                        rows,
-                        cols,
-                        cwd.clone(),
-                        argv,
-                        &launch_env,
-                        crate::pane::AgentDetection::Enabled,
-                        runtime_context.scrollback_limit_bytes,
-                        crate::terminal_theme::TerminalTheme::default(),
-                        None,
-                        runtime_context.events.clone(),
-                        runtime_context.render_notify.clone(),
-                        runtime_context.render_dirty.clone(),
-                    )
-                } else {
-                    TerminalRuntime::spawn_with_initial_history(
-                        *id,
-                        rows,
-                        cols,
-                        cwd.clone(),
-                        runtime_context.scrollback_limit_bytes,
-                        crate::terminal_theme::TerminalTheme::default(),
-                        None,
-                        runtime_context.shell_config,
-                        &launch_env,
-                        startup.initial_history_ansi,
-                        runtime_context.events.clone(),
-                        runtime_context.render_notify.clone(),
-                        runtime_context.render_dirty.clone(),
-                    )
-                }
+                spawn_restored(dock_argv.as_deref())
             }
         };
 

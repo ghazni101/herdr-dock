@@ -77,6 +77,9 @@ impl App {
             }
             panes[0]
         };
+        if self.pane_is_dock_slot(ws_idx, main) {
+            return None;
+        }
         let ratio = self.session_dock_ratio()?;
         // The dock ends up first with `ratio`; it is created as the second
         // child of `main` and swapped, so size it as that slot's share.

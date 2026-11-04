@@ -1241,6 +1241,7 @@ impl App {
                         self.render_dirty.clone(),
                     );
                 created_tab = true;
+                self.apply_default_dock_slot(target_ws_idx, target_tab_idx);
                 (target_ws_idx, target_tab_idx, moved_pane_id)
             }
             ResolvedPaneMoveDestination::NewWorkspace { label, tab_label } => {
@@ -1264,6 +1265,7 @@ impl App {
                 let target_ws_idx = self.state.workspaces.len() - 1;
                 created_workspace = true;
                 created_tab = true;
+                self.apply_default_dock_slot(target_ws_idx, 0);
                 (target_ws_idx, 0, moved_pane_id)
             }
         };
@@ -1345,6 +1347,9 @@ impl App {
                 data: EventData::TabCreated { tab: tab.clone() },
             });
         }
+        if created_tab.is_some() {
+            self.emit_non_root_pane_created_events(target_ws_idx, target_tab_idx);
+        }
         self.emit_event(EventEnvelope {
             event: EventKind::PaneMoved,
             data: EventData::PaneMoved {
@@ -1372,13 +1377,14 @@ impl App {
         moved: crate::workspace::MovedPane,
     ) {
         if let Some(ws_idx) = self.parse_workspace_id(&context.previous_workspace_id) {
-            self.state.workspaces[ws_idx].create_tab_from_existing_pane(
+            let tab_idx = self.state.workspaces[ws_idx].create_tab_from_existing_pane(
                 moved,
                 context.previous_tab_label,
                 self.event_tx.clone(),
                 self.render_notify.clone(),
                 self.render_dirty.clone(),
             );
+            self.apply_default_dock_slot(ws_idx, tab_idx);
         } else {
             let mut workspace = crate::workspace::Workspace::from_existing_pane(
                 context.previous_workspace_label,
@@ -1401,6 +1407,7 @@ impl App {
                 self.state.selected += 1;
             }
             self.state.workspaces.insert(insert_idx, workspace);
+            self.apply_default_dock_slot(insert_idx, 0);
         }
         self.state.mark_session_dirty();
         self.schedule_session_save();
@@ -3607,6 +3614,113 @@ mod tests {
             &app.state.workspaces[0].tabs[0].render_dirty,
             &app.render_dirty
         ));
+    }
+
+    fn dock_first_tab(app: &mut App) -> PaneId {
+        let main = app.state.workspaces[0].tabs[0].root_pane;
+        let dock = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        let tab = &mut app.state.workspaces[0].tabs[0];
+        tab.layout.set_ratio_at(&[], 0.2);
+        tab.layout.swap_panes(main, dock);
+        tab.layout.focus_pane(main);
+        let terminal_id = tab.terminal_id(dock).cloned().unwrap();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_manual_label(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL.into());
+        dock
+    }
+
+    fn dock_flags(app: &App, ws_idx: usize, tab_idx: usize) -> Vec<bool> {
+        let tab = &app.state.workspaces[ws_idx].tabs[tab_idx];
+        tab.layout
+            .pane_ids()
+            .into_iter()
+            .map(|pane_id| {
+                tab.terminal_id(pane_id)
+                    .and_then(|terminal_id| app.state.terminals.get(terminal_id))
+                    .is_some_and(|terminal| {
+                        terminal.manual_label.as_deref()
+                            == Some(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL)
+                    })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn api_pane_move_to_new_tab_adds_the_dock_slot() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        dock_first_tab(&mut app);
+        let moved = app.state.workspaces[0].tabs[0].root_pane;
+
+        let response = app.handle_pane_move(
+            "req".into(),
+            PaneMoveParams {
+                pane_id: public_pane_id,
+                destination: PaneMoveDestination::NewTab {
+                    workspace_id: None,
+                    label: Some("moved".into()),
+                },
+                focus: true,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(success.result, ResponseResult::PaneMove { .. }));
+        assert_eq!(app.state.workspaces[0].tabs[1].root_pane, moved);
+        assert_eq!(dock_flags(&app, 0, 1), vec![true, false]);
+        assert_eq!(app.state.workspaces[0].tabs[1].layout.focused(), moved);
+    }
+
+    #[test]
+    fn api_pane_move_to_new_workspace_adds_the_dock_slot() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        dock_first_tab(&mut app);
+        let moved = app.state.workspaces[0].tabs[0].root_pane;
+
+        let response = app.handle_pane_move(
+            "req".into(),
+            PaneMoveParams {
+                pane_id: public_pane_id,
+                destination: PaneMoveDestination::NewWorkspace {
+                    label: Some("moved".into()),
+                    tab_label: None,
+                },
+                focus: true,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(success.result, ResponseResult::PaneMove { .. }));
+        let ws_idx = app.state.workspaces.len() - 1;
+        assert_eq!(app.state.workspaces[ws_idx].tabs[0].root_pane, moved);
+        assert_eq!(dock_flags(&app, ws_idx, 0), vec![true, false]);
+    }
+
+    #[test]
+    fn api_pane_move_of_the_dock_slot_does_not_add_a_second_dock() {
+        let (mut app, _public_pane_id) = app_with_test_workspace();
+        let dock = dock_first_tab(&mut app);
+        let dock_public = app.public_pane_id(0, dock).unwrap();
+
+        let response = app.handle_pane_move(
+            "req".into(),
+            PaneMoveParams {
+                pane_id: dock_public,
+                destination: PaneMoveDestination::NewTab {
+                    workspace_id: None,
+                    label: Some("moved".into()),
+                },
+                focus: true,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(success.result, ResponseResult::PaneMove { .. }));
+        assert_eq!(app.state.workspaces[0].tabs[1].root_pane, dock);
+        assert_eq!(dock_flags(&app, 0, 1), vec![true]);
     }
 
     #[test]

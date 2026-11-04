@@ -262,7 +262,7 @@ impl App {
 
     /// A new tab can start with more than its root pane (the docked-sidebar
     /// slot); announce those panes after the root one.
-    fn emit_non_root_pane_created_events(&mut self, ws_idx: usize, tab_idx: usize) {
+    pub(super) fn emit_non_root_pane_created_events(&mut self, ws_idx: usize, tab_idx: usize) {
         let Some(tab) = self
             .state
             .workspaces
