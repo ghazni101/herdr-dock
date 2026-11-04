@@ -866,17 +866,27 @@ impl Workspace {
 
     /// Remove a specific pane from this workspace without terminating its runtime.
     /// Returns true if the workspace should close.
-    pub fn remove_pane(&mut self, pane_id: PaneId) -> bool {
+    pub fn remove_pane(&mut self, pane_id: PaneId, is_slot: impl Fn(PaneId) -> bool) -> bool {
         let Some(tab_idx) = self.find_tab_index_for_pane(pane_id) else {
             return false;
         };
-        let pane_count = self.tabs[tab_idx].layout.pane_count();
+        let remaining = self.tabs[tab_idx]
+            .layout
+            .pane_ids()
+            .into_iter()
+            .filter(|pane| *pane != pane_id)
+            .collect::<Vec<_>>();
+        let leaves_only_slots =
+            !remaining.is_empty() && remaining.iter().all(|pane| is_slot(*pane));
         let tab_count = self.tabs.len();
-        if pane_count <= 1 {
+        if self.tabs[tab_idx].layout.pane_count() <= 1 || leaves_only_slots {
             if tab_count <= 1 {
                 return true;
             }
             self.tabs.remove(tab_idx);
+            for pane in remaining {
+                self.unregister_pane(pane);
+            }
             self.unregister_pane(pane_id);
             if self.active_tab >= self.tabs.len() {
                 self.active_tab = self.tabs.len() - 1;
@@ -892,12 +902,26 @@ impl Workspace {
         false
     }
 
-    pub(crate) fn take_pane_for_move(&mut self, pane_id: PaneId) -> Option<TakenPane> {
+    pub(crate) fn take_pane_for_move(
+        &mut self,
+        pane_id: PaneId,
+        is_slot: impl Fn(PaneId) -> bool,
+    ) -> Option<TakenPane> {
         let tab_idx = self.find_tab_index_for_pane(pane_id)?;
-        let pane_count = self.tabs[tab_idx].layout.pane_count();
-        if pane_count <= 1 {
+        let remaining = self.tabs[tab_idx]
+            .layout
+            .pane_ids()
+            .into_iter()
+            .filter(|pane| *pane != pane_id)
+            .collect::<Vec<_>>();
+        let leaves_only_slots =
+            !remaining.is_empty() && remaining.iter().all(|pane| is_slot(*pane));
+        if self.tabs[tab_idx].layout.pane_count() <= 1 || leaves_only_slots {
             let mut tab = self.tabs.remove(tab_idx);
             let moved = tab.take_pane_for_move(pane_id)?;
+            for pane in remaining {
+                self.unregister_pane(pane);
+            }
             self.adjust_active_tab_after_removal(tab_idx);
             return Some(TakenPane {
                 moved,
@@ -1545,7 +1569,7 @@ mod tests {
         let mut source = Workspace::test_new("source");
         let source_pane = source.tabs[0].root_pane;
         let taken = source
-            .take_pane_for_move(source_pane)
+            .take_pane_for_move(source_pane, |_| false)
             .expect("source pane should be movable");
         let mut target = Workspace::test_new("target");
         let missing_target = PaneId::alloc();

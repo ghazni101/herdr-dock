@@ -215,15 +215,22 @@ impl App {
     }
 
     pub(super) fn handle_tab_close(&mut self, id: String, target: TabTarget) -> String {
+        match self.close_tab(id.clone(), &target) {
+            Ok(()) => encode_success(id, ResponseResult::Ok {}),
+            Err(response) => response,
+        }
+    }
+
+    pub(super) fn close_tab(&mut self, id: String, target: &TabTarget) -> Result<(), String> {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
-            return tab_not_found(id, &target.tab_id);
+            return Err(tab_not_found(id, &target.tab_id));
         };
         let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) else {
-            return tab_not_found(id, &target.tab_id);
+            return Err(tab_not_found(id, &target.tab_id));
         };
         let workspace_id = self.public_workspace_id(ws_idx);
         let Some(ws) = self.state.workspaces.get(ws_idx) else {
-            return tab_not_found(id, &target.tab_id);
+            return Err(tab_not_found(id, &target.tab_id));
         };
         let closes_workspace = ws.tabs.len() <= 1;
         let terminal_ids = self.state.terminal_ids_for_tab(ws_idx, tab_idx);
@@ -234,18 +241,16 @@ impl App {
             .unwrap_or_default();
 
         if closes_workspace {
-            if let Err(response) = self.require_restored_group_close_ready(
+            self.require_restored_group_close_ready(
                 &id,
                 &self.state.workspace_close_indices(ws_idx),
-            ) {
-                return response;
-            }
+            )?;
             if self.state.confirm_implicit_worktree_group_close(ws_idx) {
-                return encode_error(
+                return Err(encode_error(
                     id,
                     "confirmation_required",
                     "closing this tab would close a worktree group",
-                );
+                ));
             }
             let workspace = self.workspace_info(ws_idx);
             self.state.selected = ws_idx;
@@ -266,18 +271,18 @@ impl App {
                     workspace: Some(workspace),
                 },
             });
-            return encode_success(id, ResponseResult::Ok {});
+            return Ok(());
         }
 
         let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
-            return tab_not_found(id, &target.tab_id);
+            return Err(tab_not_found(id, &target.tab_id));
         };
         if !ws.close_tab(tab_idx) {
-            return encode_error(
+            return Err(encode_error(
                 id,
                 "tab_close_failed",
                 format!("tab {} could not be closed", target.tab_id),
-            );
+            ));
         }
         self.state.remove_plugin_pane_records(pane_ids);
         self.state.remove_unattached_terminal_ids(terminal_ids);
@@ -291,7 +296,7 @@ impl App {
             },
         });
 
-        encode_success(id, ResponseResult::Ok {})
+        Ok(())
     }
 
     fn tab_list_info(&self, ws_idx: usize) -> Vec<crate::api::schema::TabInfo> {

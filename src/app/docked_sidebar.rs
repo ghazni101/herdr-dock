@@ -17,20 +17,58 @@ const DEFAULT_DOCK_COLUMNS: f32 = 26.0;
 
 impl App {
     fn pane_is_dock_slot(&self, ws_idx: usize, pane_id: PaneId) -> bool {
-        self.state
+        self.state.pane_is_dock_slot(ws_idx, pane_id)
+    }
+
+    /// Panes of the tab that are docked-sidebar slots.
+    pub(super) fn tab_dock_slot_panes(&self, ws_idx: usize, tab_idx: usize) -> Vec<PaneId> {
+        let Some(tab) = self
+            .state
             .workspaces
             .get(ws_idx)
-            .and_then(|ws| ws.terminal_id(pane_id))
-            .and_then(|terminal_id| self.state.terminals.get(terminal_id))
-            .is_some_and(|terminal| {
-                terminal.manual_label.as_deref() == Some(DOCKED_SIDEBAR_PANE_LABEL)
-            })
+            .and_then(|ws| ws.tabs.get(tab_idx))
+        else {
+            return Vec::new();
+        };
+        tab.layout
+            .pane_ids()
+            .into_iter()
+            .filter(|pane_id| self.pane_is_dock_slot(ws_idx, *pane_id))
+            .collect()
+    }
+
+    /// True when removing `closing` would leave the tab with panes but only
+    /// docked-sidebar slots, i.e. no pane the user can reach.
+    pub(super) fn pane_close_leaves_only_dock_slots(
+        &self,
+        ws_idx: usize,
+        tab_idx: usize,
+        closing: PaneId,
+    ) -> bool {
+        let Some(tab) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.tabs.get(tab_idx))
+        else {
+            return false;
+        };
+        let remaining = tab
+            .layout
+            .pane_ids()
+            .into_iter()
+            .filter(|pane_id| *pane_id != closing)
+            .collect::<Vec<_>>();
+        !remaining.is_empty()
+            && remaining
+                .iter()
+                .all(|pane_id| self.pane_is_dock_slot(ws_idx, *pane_id))
     }
 
     /// Split ratio for a new dock, or None when the session has no dock yet.
     /// Inherits the width share of an existing left-hand dock, preferring the
     /// active space, so new tabs match the dock the user already sized.
-    fn session_dock_ratio(&self) -> Option<f32> {
+    pub(super) fn session_dock_ratio(&self) -> Option<f32> {
         let mut found = false;
         let active = self.state.active;
         let order = active
@@ -69,6 +107,16 @@ impl App {
         ws_idx: usize,
         tab_idx: usize,
     ) -> Option<PaneId> {
+        let ratio = self.session_dock_ratio()?;
+        self.apply_default_dock_slot_with_ratio(ws_idx, tab_idx, ratio)
+    }
+
+    pub(super) fn apply_default_dock_slot_with_ratio(
+        &mut self,
+        ws_idx: usize,
+        tab_idx: usize,
+        ratio: f32,
+    ) -> Option<PaneId> {
         let main = {
             let tab = self.state.workspaces.get(ws_idx)?.tabs.get(tab_idx)?;
             let panes = tab.layout.pane_ids();
@@ -77,10 +125,6 @@ impl App {
             }
             panes[0]
         };
-        if self.pane_is_dock_slot(ws_idx, main) {
-            return None;
-        }
-        let ratio = self.session_dock_ratio()?;
         // The dock ends up first with `ratio`; it is created as the second
         // child of `main` and swapped, so size it as that slot's share.
         let (rows, cols) = self

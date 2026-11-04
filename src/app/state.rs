@@ -944,6 +944,17 @@ impl AppState {
         }
     }
 
+    pub(crate) fn pane_is_dock_slot(&self, ws_idx: usize, pane_id: PaneId) -> bool {
+        self.workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.terminal_id(pane_id))
+            .and_then(|terminal_id| self.terminals.get(terminal_id))
+            .is_some_and(|terminal| {
+                terminal.manual_label.as_deref()
+                    == Some(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL)
+            })
+    }
+
     /// Returns true when the given (workspace, tab, pane) refers to the
     /// currently focused pane in the active workspace's active tab.
     pub(crate) fn runtime_for_pane_in_workspace<'a>(
