@@ -1035,10 +1035,11 @@ impl ClientShellState {
                 .iter()
                 .find(|tab| tab.tab_id == pane.tab_id && tab.workspace_id == pane.workspace_id)?;
             (self.config.confirm_close
-                && !snapshot
-                    .panes
-                    .iter()
-                    .any(|other| other.tab_id == tab.tab_id && other.pane_id != pane_id)
+                && !snapshot.panes.iter().any(|other| {
+                    other.tab_id == tab.tab_id
+                        && other.pane_id != pane_id
+                        && other.label.as_deref() != Some(DOCKED_SIDEBAR_LABEL)
+                })
                 && !snapshot.tabs.iter().any(|other| {
                     other.workspace_id == tab.workspace_id && other.tab_id != tab.tab_id
                 }))
@@ -1195,7 +1196,10 @@ impl ClientShellState {
                 snapshot
                     .panes
                     .iter()
-                    .filter(|pane| pane.workspace_id == member.workspace_id)
+                    .filter(|pane| {
+                        pane.workspace_id == member.workspace_id
+                            && pane.label.as_deref() != Some(DOCKED_SIDEBAR_LABEL)
+                    })
                     .count()
             })
             .sum::<usize>();
