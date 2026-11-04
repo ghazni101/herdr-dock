@@ -2,6 +2,7 @@ use super::*;
 use crate::protocol::ClientShellPane;
 
 pub(super) const DOCKED_SIDEBAR_LABEL: &str = "herdr:sidebar";
+pub(super) const DOCKED_MAIN_LABEL: &str = "main";
 
 pub(super) const MIN_TAB_WIDTH: u16 = 8;
 pub(super) const NEW_TAB_WIDTH: u16 = 3;

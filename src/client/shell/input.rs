@@ -1086,9 +1086,24 @@ impl ClientShellState {
     }
 
     pub(super) fn focused_pane_id(&self) -> Option<String> {
-        self.snapshot
-            .as_deref()
-            .and_then(|snapshot| snapshot.focused_pane_id.clone())
+        let snapshot = self.snapshot.as_deref()?;
+        let focused = snapshot.focused_pane_id.clone()?;
+        // The dock slot is client chrome, not a terminal. If server focus
+        // lands on it (e.g. after closing the focused pane), keep input and
+        // pane actions on the tab's main pane instead of its sleep process.
+        if self
+            .docked_sidebar_pane()
+            .is_some_and(|dock| dock.pane_id == focused)
+        {
+            let tab_id = snapshot.focused_tab_id.as_deref();
+            if let Some(main) = snapshot.panes.iter().find(|pane| {
+                Some(pane.tab_id.as_str()) == tab_id
+                    && pane.label.as_deref() == Some(DOCKED_MAIN_LABEL)
+            }) {
+                return Some(main.pane_id.clone());
+            }
+        }
+        Some(focused)
     }
 
     pub(crate) fn clipboard_image_target(
