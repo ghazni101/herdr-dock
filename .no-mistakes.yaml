@@ -1,0 +1,9 @@
+# Pin the pipeline's Test and Lint steps to the repository's canonical recipes
+# instead of asking an agent to improvise commands.
+#
+# Both recipes build the vendored libghostty-vt, which needs Zig 0.16.0. Prefer
+# an inherited ZIG or a zig on PATH, then fall back to the local copy used on
+# this workstation.
+commands:
+  test: 'ZIG="${ZIG:-$(command -v zig || echo /var/tmp/zig-x86_64-linux-0.16.0/zig)}" just test'
+  lint: 'ZIG="${ZIG:-$(command -v zig || echo /var/tmp/zig-x86_64-linux-0.16.0/zig)}" just lint'
