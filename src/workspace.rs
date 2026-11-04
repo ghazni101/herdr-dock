@@ -870,14 +870,7 @@ impl Workspace {
         let Some(tab_idx) = self.find_tab_index_for_pane(pane_id) else {
             return false;
         };
-        let remaining = self.tabs[tab_idx]
-            .layout
-            .pane_ids()
-            .into_iter()
-            .filter(|pane| *pane != pane_id)
-            .collect::<Vec<_>>();
-        let leaves_only_slots =
-            !remaining.is_empty() && remaining.iter().all(|pane| is_slot(*pane));
+        let (remaining, leaves_only_slots) = self.pane_removal_shape(tab_idx, pane_id, &is_slot);
         let tab_count = self.tabs.len();
         if self.tabs[tab_idx].layout.pane_count() <= 1 || leaves_only_slots {
             if tab_count <= 1 {
@@ -902,12 +895,12 @@ impl Workspace {
         false
     }
 
-    pub(crate) fn take_pane_for_move(
-        &mut self,
+    fn pane_removal_shape(
+        &self,
+        tab_idx: usize,
         pane_id: PaneId,
-        is_slot: impl Fn(PaneId) -> bool,
-    ) -> Option<TakenPane> {
-        let tab_idx = self.find_tab_index_for_pane(pane_id)?;
+        is_slot: &impl Fn(PaneId) -> bool,
+    ) -> (Vec<PaneId>, bool) {
         let remaining = self.tabs[tab_idx]
             .layout
             .pane_ids()
@@ -916,6 +909,16 @@ impl Workspace {
             .collect::<Vec<_>>();
         let leaves_only_slots =
             !remaining.is_empty() && remaining.iter().all(|pane| is_slot(*pane));
+        (remaining, leaves_only_slots)
+    }
+
+    pub(crate) fn take_pane_for_move(
+        &mut self,
+        pane_id: PaneId,
+        is_slot: impl Fn(PaneId) -> bool,
+    ) -> Option<TakenPane> {
+        let tab_idx = self.find_tab_index_for_pane(pane_id)?;
+        let (remaining, leaves_only_slots) = self.pane_removal_shape(tab_idx, pane_id, &is_slot);
         if self.tabs[tab_idx].layout.pane_count() <= 1 || leaves_only_slots {
             let mut tab = self.tabs.remove(tab_idx);
             let moved = tab.take_pane_for_move(pane_id)?;

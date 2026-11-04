@@ -955,6 +955,33 @@ impl AppState {
             })
     }
 
+    /// True when removing `closing` would leave the tab with panes but only
+    /// docked-sidebar slots, i.e. no pane the user can reach.
+    pub(crate) fn tab_left_with_only_dock_slots(
+        &self,
+        ws_idx: usize,
+        tab_idx: usize,
+        closing: PaneId,
+    ) -> bool {
+        let Some(tab) = self
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.tabs.get(tab_idx))
+        else {
+            return false;
+        };
+        let remaining = tab
+            .layout
+            .pane_ids()
+            .into_iter()
+            .filter(|pane_id| *pane_id != closing)
+            .collect::<Vec<_>>();
+        !remaining.is_empty()
+            && remaining
+                .iter()
+                .all(|pane_id| self.pane_is_dock_slot(ws_idx, *pane_id))
+    }
+
     /// Returns true when the given (workspace, tab, pane) refers to the
     /// currently focused pane in the active workspace's active tab.
     pub(crate) fn runtime_for_pane_in_workspace<'a>(

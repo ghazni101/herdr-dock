@@ -2084,10 +2084,7 @@ impl AppState {
             .unwrap_or_default();
         let closes_tab = tab_idx.is_some_and(|tab_idx| {
             self.workspaces[ws_idx].tabs[tab_idx].layout.pane_count() <= 1
-                || (!remaining.is_empty()
-                    && remaining
-                        .iter()
-                        .all(|pane| self.pane_is_dock_slot(ws_idx, *pane)))
+                || self.tab_left_with_only_dock_slots(ws_idx, tab_idx, pane_id)
         });
         let slot_panes = remaining
             .iter()

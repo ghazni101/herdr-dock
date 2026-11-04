@@ -37,34 +37,6 @@ impl App {
             .collect()
     }
 
-    /// True when removing `closing` would leave the tab with panes but only
-    /// docked-sidebar slots, i.e. no pane the user can reach.
-    pub(super) fn pane_close_leaves_only_dock_slots(
-        &self,
-        ws_idx: usize,
-        tab_idx: usize,
-        closing: PaneId,
-    ) -> bool {
-        let Some(tab) = self
-            .state
-            .workspaces
-            .get(ws_idx)
-            .and_then(|ws| ws.tabs.get(tab_idx))
-        else {
-            return false;
-        };
-        let remaining = tab
-            .layout
-            .pane_ids()
-            .into_iter()
-            .filter(|pane_id| *pane_id != closing)
-            .collect::<Vec<_>>();
-        !remaining.is_empty()
-            && remaining
-                .iter()
-                .all(|pane_id| self.pane_is_dock_slot(ws_idx, *pane_id))
-    }
-
     /// Split ratio for a new dock, or None when the session has no dock yet.
     /// Inherits the width share of an existing left-hand dock, preferring the
     /// active space, so new tabs match the dock the user already sized.

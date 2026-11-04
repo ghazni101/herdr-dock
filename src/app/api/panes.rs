@@ -2010,7 +2010,10 @@ impl App {
             return Err(pane_not_found(id, &target.pane_id));
         };
         if let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) {
-            if self.pane_close_leaves_only_dock_slots(ws_idx, tab_idx, pane_id) {
+            if self
+                .state
+                .tab_left_with_only_dock_slots(ws_idx, tab_idx, pane_id)
+            {
                 let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) else {
                     return Err(pane_not_found(id, &target.pane_id));
                 };
