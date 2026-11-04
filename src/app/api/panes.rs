@@ -229,6 +229,13 @@ impl App {
                 .get(ws_idx)
                 .and_then(crate::workspace::Workspace::focused_pane_id)
                 == Some(pane_id);
+        if self.pane_is_dock_slot(ws_idx, pane_id) {
+            return encode_error(
+                id,
+                "scrollback_editor_failed",
+                "the docked sidebar slot is client chrome and cannot be edited",
+            );
+        }
         if !is_focused {
             return encode_error(id, "stale_pane_target", "pane is no longer focused");
         }
@@ -816,14 +823,9 @@ impl App {
                         .unwrap_or_default(),
                 );
             };
-            let target = self.directional_pane_target(ws_idx, tab_idx, source_pane_id, direction);
-            if target.is_some_and(|target| self.pane_is_dock_slot(ws_idx, target)) {
-                return encode_error(
-                    id,
-                    "invalid_pane_swap",
-                    "the docked sidebar slot is client chrome and cannot be swapped",
-                );
-            }
+            let target = self
+                .directional_pane_target(ws_idx, tab_idx, source_pane_id, direction)
+                .filter(|target| !self.pane_is_dock_slot(ws_idx, *target));
             match target {
                 Some(target_pane_id) => {
                     (ws_idx, tab_idx, source_pane_id, Some(target_pane_id), None)
@@ -2203,7 +2205,14 @@ impl App {
     }
 
     fn resolve_swap_source(&self, pane_id: Option<&str>) -> Option<(usize, PaneId)> {
-        self.resolve_optional_pane(pane_id)
+        match pane_id {
+            Some(pane_id) => self.parse_pane_id(pane_id),
+            None => {
+                let (ws_idx, pane_id) = self.resolve_optional_pane(None)?;
+                let pane_id = self.implicit_operation_pane(ws_idx, pane_id)?;
+                Some((ws_idx, pane_id))
+            }
+        }
     }
 
     fn directional_pane_target(
@@ -2876,6 +2885,32 @@ mod tests {
             },
         );
         assert!(response.contains("stale_content"));
+    }
+
+    #[test]
+    fn api_edit_scrollback_rejects_the_dock_slot() {
+        let (mut app, _public_pane_id) = app_with_test_workspace();
+        let dock = dock_first_tab(&mut app);
+        app.state.workspaces[0].tabs[0].layout.focus_pane(dock);
+        let dock_public = app.public_pane_id(0, dock).unwrap();
+        let before = app.state.workspaces[0].tabs[0].layout.pane_ids();
+
+        let response = app.handle_pane_edit_scrollback(
+            "req".into(),
+            PaneTarget {
+                pane_id: dock_public,
+            },
+        );
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "scrollback_editor_failed");
+        assert!(
+            error.error.message.contains("sidebar"),
+            "rejection should name the sidebar slot, got {message:?}",
+            message = error.error.message
+        );
+        assert!(app.overlay_panes.is_empty());
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_ids(), before);
     }
 
     #[tokio::test]
@@ -3711,31 +3746,7 @@ mod tests {
     }
 
     fn dock_first_tab(app: &mut App) -> PaneId {
-        dock_first_tab_in(app, 0)
-    }
-
-    fn dock_first_tab_in(app: &mut App, ws_idx: usize) -> PaneId {
-        dock_tab(app, ws_idx, 0)
-    }
-
-    fn dock_tab(app: &mut App, ws_idx: usize, tab_idx: usize) -> PaneId {
-        let previous_tab = app.state.workspaces[ws_idx].active_tab;
-        app.state.workspaces[ws_idx].active_tab = tab_idx;
-        let main = app.state.workspaces[ws_idx].tabs[tab_idx].root_pane;
-        let dock = app.state.workspaces[ws_idx].test_split(ratatui::layout::Direction::Horizontal);
-        app.state.ensure_test_terminals();
-        let tab = &mut app.state.workspaces[ws_idx].tabs[tab_idx];
-        tab.layout.set_ratio_at(&[], 0.2);
-        tab.layout.swap_panes(main, dock);
-        tab.layout.focus_pane(main);
-        let terminal_id = tab.terminal_id(dock).cloned().unwrap();
-        app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .unwrap()
-            .set_manual_label(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL.into());
-        app.state.workspaces[ws_idx].active_tab = previous_tab;
-        dock
+        crate::app::api::test_support::dock_tab(app, 0, 0)
     }
 
     fn dock_flags(app: &App, ws_idx: usize, tab_idx: usize) -> Vec<bool> {
@@ -3906,7 +3917,7 @@ mod tests {
     fn api_pane_move_rejects_the_dock_slot_as_insert_target() {
         let (mut app, public_pane_id) = app_with_test_workspace();
         let target_tab_idx = app.state.workspaces[0].test_add_tab(Some("target"));
-        let dock = dock_tab(&mut app, 0, target_tab_idx);
+        let dock = crate::app::api::test_support::dock_tab(&mut app, 0, target_tab_idx);
         let dock_public = app.public_pane_id(0, dock).unwrap();
         let tab_id = app.public_tab_id(0, target_tab_idx).unwrap();
         let before = app.state.workspaces[0].tabs[target_tab_idx]
@@ -3940,6 +3951,64 @@ mod tests {
                 .pane_ids(),
             before
         );
+    }
+
+    #[test]
+    fn api_pane_swap_direction_treats_the_dock_neighbor_as_no_neighbor() {
+        let (mut app, _public_pane_id) = app_with_test_workspace();
+        let dock = dock_first_tab(&mut app);
+        let main = app.state.workspaces[0].tabs[0].root_pane;
+        let main_public = app.public_pane_id(0, main).unwrap();
+        let before = app.state.workspaces[0].tabs[0].layout.pane_ids();
+        compute_test_view(&mut app);
+
+        let response = app.handle_pane_swap(
+            "req".into(),
+            PaneSwapParams {
+                pane_id: Some(main_public),
+                direction: Some(PaneDirection::Left),
+                ..PaneSwapParams::default()
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneSwap { swap: swap_result } = success.result else {
+            panic!("expected pane swap response");
+        };
+        assert!(!swap_result.changed);
+        assert_eq!(swap_result.reason, Some(PaneSwapReason::NoNeighbor));
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_ids(), before);
+        assert_ne!(app.state.workspaces[0].tabs[0].layout.focused(), dock);
+    }
+
+    #[test]
+    fn api_pane_swap_direction_retargets_an_unnamed_dock_source() {
+        let (mut app, _public_pane_id) = app_with_test_workspace();
+        let dock = dock_first_tab(&mut app);
+        let main = app.state.workspaces[0].tabs[0].root_pane;
+        let main_public = app.public_pane_id(0, main).unwrap();
+        app.state.active = Some(0);
+        app.state.workspaces[0].tabs[0].layout.focus_pane(dock);
+        let before = app.state.workspaces[0].tabs[0].layout.pane_ids();
+        compute_test_view(&mut app);
+
+        let response = app.handle_pane_swap(
+            "req".into(),
+            PaneSwapParams {
+                pane_id: None,
+                direction: Some(PaneDirection::Left),
+                ..PaneSwapParams::default()
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneSwap { swap: swap_result } = success.result else {
+            panic!("expected pane swap response");
+        };
+        assert_eq!(swap_result.source_pane_id, main_public);
+        assert!(!swap_result.changed);
+        assert_eq!(swap_result.reason, Some(PaneSwapReason::NoNeighbor));
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_ids(), before);
     }
 
     #[test]
@@ -4007,7 +4076,7 @@ mod tests {
         app.state.active = Some(0);
         app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
         let target_tab_idx = app.state.workspaces[0].test_add_tab(Some("target"));
-        let dock = dock_tab(&mut app, 0, target_tab_idx);
+        let dock = crate::app::api::test_support::dock_tab(&mut app, 0, target_tab_idx);
         app.state.workspaces[0].active_tab = target_tab_idx;
         app.state.workspaces[0].tabs[target_tab_idx]
             .layout

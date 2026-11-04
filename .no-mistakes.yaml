@@ -1,9 +1,12 @@
-# Pin the pipeline's Test and Lint steps to the repository's canonical recipes
-# instead of asking an agent to improvise commands.
+# Pin the pipeline's Test and Lint steps to the repository's canonical recipes.
 #
-# Both recipes build the vendored libghostty-vt, which needs Zig 0.16.0. Prefer
-# an inherited ZIG or a zig on PATH, then fall back to the local copy used on
-# this workstation.
+# Both recipes build the vendored libghostty-vt, which needs Zig 0.16.0 from the
+# environment (`ZIG` or a `zig` on PATH), as AGENTS.md and the CI workflow
+# document.
+#
+# `just check` would additionally run windows-lint, which is platform-only and
+# needs the Windows SDK installed by `just setup-windows-cross`; it is excluded
+# here. `just lint` plus `just test` cover the Linux checks and docs contract.
 commands:
-  test: 'ZIG="${ZIG:-$(command -v zig || echo /var/tmp/zig-x86_64-linux-0.16.0/zig)}" just test'
-  lint: 'ZIG="${ZIG:-$(command -v zig || echo /var/tmp/zig-x86_64-linux-0.16.0/zig)}" just lint'
+  test: just test
+  lint: just lint

@@ -374,6 +374,18 @@ impl App {
             .new_pane_size(crate::ui::NewPanePlacement::ZoomedOverlay);
         let (env, _) = self.custom_command_env();
         let host_terminal_appearance = self.pane_host_terminal_appearance();
+        let split_target = {
+            let ws = self
+                .state
+                .workspaces
+                .get(ws_idx)
+                .ok_or_else(|| std::io::Error::other("active workspace disappeared"))?;
+            let focused = ws
+                .focused_pane_id()
+                .ok_or_else(|| std::io::Error::other("no focused pane"))?;
+            self.implicit_operation_pane(ws_idx, focused)
+                .ok_or_else(|| std::io::Error::other("focused pane disappeared"))?
+        };
 
         let ws = self
             .state
@@ -386,13 +398,10 @@ impl App {
             .ok_or_else(|| std::io::Error::other("no focused pane"))?;
         let previous_zoomed = ws.active_tab().map(|tab| tab.zoomed).unwrap_or(false);
         let cwd = ws.active_tab().and_then(|tab| {
-            tab.cwd_for_pane(
-                previous_focus,
-                &self.state.terminals,
-                &self.terminal_runtimes,
-            )
+            tab.cwd_for_pane(split_target, &self.state.terminals, &self.terminal_runtimes)
         });
-        let new_pane = ws.split_focused_command(
+        let new_pane = ws.split_pane_command(
+            split_target,
             Direction::Horizontal,
             rows,
             cols,
@@ -461,13 +470,12 @@ impl App {
         let previous_focus = ws
             .focused_pane_id()
             .ok_or_else(|| std::io::Error::other("no focused pane"))?;
+        let split_target = self
+            .implicit_operation_pane(ws_idx, previous_focus)
+            .ok_or_else(|| std::io::Error::other("focused pane disappeared"))?;
         let cwd = cwd.or_else(|| {
             ws.active_tab().and_then(|tab| {
-                tab.cwd_for_pane(
-                    previous_focus,
-                    &self.state.terminals,
-                    &self.terminal_runtimes,
-                )
+                tab.cwd_for_pane(split_target, &self.state.terminals, &self.terminal_runtimes)
             })
         });
 
@@ -480,7 +488,7 @@ impl App {
                 .ok_or_else(|| std::io::Error::other("active workspace disappeared"))?;
             let previous_zoomed = ws.active_tab().map(|tab| tab.zoomed).unwrap_or(false);
             let result = ws.split_pane_argv_command(
-                previous_focus,
+                split_target,
                 Direction::Horizontal,
                 rows,
                 cols,
@@ -766,6 +774,50 @@ mod tests {
         }
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "invoked");
         let _ = std::fs::remove_file(path);
+    }
+
+    fn docked_test_app(name: &str) -> (crate::app::App, crate::layout::PaneId) {
+        let mut app = test_app();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new(name)];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let dock = crate::app::api::test_support::dock_tab(&mut app, 0, 0);
+        app.state.workspaces[0].tabs[0].layout.focus_pane(dock);
+        (app, dock)
+    }
+
+    #[tokio::test]
+    async fn pane_command_targets_the_user_pane_when_dock_has_focus() {
+        let (mut app, dock) = docked_test_app("pane-command-dock-focus");
+        let ratio_before = app.session_dock_ratio();
+        assert_eq!(ratio_before, Some(0.2));
+
+        app.spawn_pane_command(crate::app::exiting_test_command(), Vec::new())
+            .unwrap();
+
+        assert_eq!(app.session_dock_ratio(), ratio_before);
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_ids().len(), 3);
+        assert_ne!(app.state.workspaces[0].tabs[0].layout.focused(), dock);
+        crate::app::api::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn overlay_split_targets_the_user_pane_when_dock_has_focus() {
+        let (mut app, dock) = docked_test_app("overlay-dock-focus");
+        let ratio_before = app.session_dock_ratio();
+        assert_eq!(ratio_before, Some(0.2));
+        let argv = vec![crate::app::exiting_test_command().to_string()];
+
+        let (ws_idx, new_pane) = app
+            .spawn_overlay_argv_command(&argv, None, Vec::new(), Vec::new())
+            .unwrap();
+
+        assert_eq!(ws_idx, 0);
+        assert_ne!(new_pane.pane_id, dock);
+        assert_eq!(app.session_dock_ratio(), ratio_before);
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_ids().len(), 3);
+        crate::app::api::test_support::shutdown_test_runtimes(&mut app);
     }
 
     #[test]

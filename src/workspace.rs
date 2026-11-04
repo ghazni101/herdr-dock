@@ -619,8 +619,9 @@ impl Workspace {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn split_focused_command(
+    pub fn split_pane_command(
         &mut self,
+        target: PaneId,
         direction: Direction,
         rows: u16,
         cols: u16,
@@ -640,7 +641,8 @@ impl Workspace {
         let new_pane = self
             .active_tab_mut()
             .expect("workspace must always have at least one tab")
-            .split_focused_command(
+            .split_pane_command(
+                target,
                 direction,
                 rows,
                 cols,
