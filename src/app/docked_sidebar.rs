@@ -1,10 +1,13 @@
 //! Fork default layout for the docked sidebar.
 //!
 //! The docked sidebar is a pane labelled `herdr:sidebar` that the client paints
-//! its sidebar over. Once any tab in the session carries that slot, every new
-//! space and tab gets one too, so the sidebar does not vanish when the user
-//! creates a workspace or tab. A session that never docked (including the very
-//! first space, which the user's layout plugin builds) is left untouched.
+//! its sidebar over. Once any tab in the session carries that slot, spaces and
+//! tabs created through the normal workspace, tab, and pane-move paths get one
+//! too, so the sidebar does not vanish when the user creates a workspace or tab.
+//! Creation paths that supply their own layout, such as `layout apply` and
+//! plugin-opened tabs, keep exactly the panes they build. A session that never
+//! docked (including the very first space, which the user's layout plugin
+//! builds) is left untouched.
 
 use ratatui::layout::Direction;
 
