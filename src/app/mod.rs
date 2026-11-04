@@ -18,6 +18,7 @@ pub(crate) use api_helpers::limit_snapshot_lines;
 mod creation;
 mod custom_commands;
 mod docked_sidebar;
+pub(crate) use docked_sidebar::dock_slot_argv;
 mod git_refresh;
 mod ids;
 mod popup;

@@ -141,7 +141,7 @@ impl App {
 /// client only paints the sidebar over it. Spawn an inert placeholder so every
 /// tab does not pay for a second interactive shell that can source rc files or
 /// be detected as an agent.
-fn dock_slot_argv() -> Vec<String> {
+pub(crate) fn dock_slot_argv() -> Vec<String> {
     #[cfg(windows)]
     {
         vec![

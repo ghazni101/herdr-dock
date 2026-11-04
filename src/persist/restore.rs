@@ -533,6 +533,8 @@ fn restore_tab(
         }
 
         let saved_label = saved_pane.and_then(|p| p.label.clone());
+        let dock_slot =
+            saved_label.as_deref() == Some(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL);
         let saved_agent_name = saved_pane.and_then(|p| p.agent_name.clone());
         let saved_managed_agent = saved_pane
             .and_then(|pane| pane.managed_agent_kind.as_deref())
@@ -646,6 +648,23 @@ fn restore_tab(
                     runtime_context.render_notify.clone(),
                     runtime_context.render_dirty.clone(),
                 )
+            } else if dock_slot {
+                let argv = crate::app::dock_slot_argv();
+                TerminalRuntime::spawn_argv_command(
+                    *id,
+                    rows,
+                    cols,
+                    cwd.clone(),
+                    &argv,
+                    &launch_env,
+                    crate::pane::AgentDetection::Enabled,
+                    runtime_context.scrollback_limit_bytes,
+                    crate::terminal_theme::TerminalTheme::default(),
+                    None,
+                    runtime_context.events.clone(),
+                    runtime_context.render_notify.clone(),
+                    runtime_context.render_dirty.clone(),
+                )
             } else {
                 TerminalRuntime::spawn_with_initial_history(
                     *id,
@@ -666,21 +685,40 @@ fn restore_tab(
 
             #[cfg(not(unix))]
             {
-                TerminalRuntime::spawn_with_initial_history(
-                    *id,
-                    rows,
-                    cols,
-                    cwd.clone(),
-                    runtime_context.scrollback_limit_bytes,
-                    crate::terminal_theme::TerminalTheme::default(),
-                    None,
-                    runtime_context.shell_config,
-                    &launch_env,
-                    startup.initial_history_ansi,
-                    runtime_context.events.clone(),
-                    runtime_context.render_notify.clone(),
-                    runtime_context.render_dirty.clone(),
-                )
+                if dock_slot {
+                    let argv = crate::app::dock_slot_argv();
+                    TerminalRuntime::spawn_argv_command(
+                        *id,
+                        rows,
+                        cols,
+                        cwd.clone(),
+                        &argv,
+                        &launch_env,
+                        crate::pane::AgentDetection::Enabled,
+                        runtime_context.scrollback_limit_bytes,
+                        crate::terminal_theme::TerminalTheme::default(),
+                        None,
+                        runtime_context.events.clone(),
+                        runtime_context.render_notify.clone(),
+                        runtime_context.render_dirty.clone(),
+                    )
+                } else {
+                    TerminalRuntime::spawn_with_initial_history(
+                        *id,
+                        rows,
+                        cols,
+                        cwd.clone(),
+                        runtime_context.scrollback_limit_bytes,
+                        crate::terminal_theme::TerminalTheme::default(),
+                        None,
+                        runtime_context.shell_config,
+                        &launch_env,
+                        startup.initial_history_ansi,
+                        runtime_context.events.clone(),
+                        runtime_context.render_notify.clone(),
+                        runtime_context.render_dirty.clone(),
+                    )
+                }
             }
         };
 
@@ -692,6 +730,8 @@ fn restore_tab(
                     if let Some(argv) = saved_launch_argv {
                         terminal = terminal.with_launch_argv(argv).with_respawn_shell_on_exit();
                     }
+                } else if dock_slot {
+                    terminal = terminal.with_launch_argv(crate::app::dock_slot_argv());
                 }
                 if let Some(label) = saved_label {
                     terminal.set_manual_label(label);
@@ -2160,6 +2200,101 @@ mod tests {
             for (_, runtime) in runtimes {
                 runtime.shutdown();
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn restore_keeps_the_dock_slot_on_the_placeholder() {
+        let cwd = std::env::current_dir().unwrap();
+        let pane_snapshot = |label: Option<&str>| super::super::snapshot::PaneSnapshot {
+            cwd: cwd.clone(),
+            label: label.map(str::to_string),
+            agent_name: None,
+            managed_agent_kind: None,
+            agent_session: None,
+            agent_resume: None,
+            launch_argv: None,
+        };
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("w1".into()),
+                custom_name: None,
+                identity_cwd: cwd.clone(),
+                worktree_space: None,
+                public_pane_numbers: HashMap::new(),
+                next_public_pane_number: 0,
+                public_tab_numbers: Vec::new(),
+                next_public_tab_number: 0,
+                tabs: vec![TabSnapshot {
+                    custom_name: None,
+                    layout: LayoutSnapshot::Split {
+                        direction: super::super::snapshot::DirectionSnapshot::Horizontal,
+                        ratio: 0.2,
+                        first: Box::new(LayoutSnapshot::Pane(0)),
+                        second: Box::new(LayoutSnapshot::Pane(1)),
+                    },
+                    panes: HashMap::from([
+                        (0, pane_snapshot(None)),
+                        (
+                            1,
+                            pane_snapshot(Some(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL)),
+                        ),
+                    ]),
+                    zoomed: false,
+                    focused: Some(0),
+                    root_pane: Some(0),
+                }],
+                active_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+        };
+        let (events, _event_rx) = mpsc::channel(8);
+
+        let (_workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        let dock = terminals
+            .values()
+            .find(|terminal| {
+                terminal.manual_label.as_deref()
+                    == Some(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL)
+            })
+            .expect("dock slot terminal should restore");
+        assert!(
+            dock.launch_argv.is_some(),
+            "the dock slot must restore its placeholder command, not the login shell"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            dock.launch_argv
+                .as_deref()
+                .and_then(|argv| argv.first())
+                .map(String::as_str),
+            Some("sleep")
+        );
+        let main = terminals
+            .values()
+            .find(|terminal| terminal.manual_label.is_none())
+            .expect("main pane terminal should restore");
+        assert_eq!(main.launch_argv, None);
+        for (_, runtime) in runtimes {
+            runtime.shutdown();
         }
     }
 
