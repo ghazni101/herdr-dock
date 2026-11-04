@@ -75,6 +75,7 @@ fn default_capabilities() -> Option<ServerCapabilities> {
         surface_interest: true,
         health_check: true,
         ssh_agent_registration: false,
+        docked_sidebar: true,
     })
 }
 
@@ -1397,6 +1398,7 @@ mod tests {
                 surface_interest: true,
                 health_check: true,
                 ssh_agent_registration: false,
+                docked_sidebar: false,
             }),
             None,
             None,

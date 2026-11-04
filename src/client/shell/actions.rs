@@ -11,13 +11,7 @@ impl ClientShellState {
                 outcome.detach = true;
             }
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::ToggleSidebar) => {
-                self.sidebar_collapsed = !self.sidebar_collapsed;
-                self.sidebar_collapsed_manual = true;
-                self.reveal_navigation_workspace = true;
-                self.invalidate_pane_surface();
-                outcome.repaint = true;
-                outcome.resize = true;
-                self.persist_chrome_preferences(outcome);
+                self.toggle_sidebar_collapsed(outcome);
             }
             crate::input::KeybindMatch::Action(action) => {
                 if self.workspace_preview_action_blocked()
@@ -113,11 +107,7 @@ impl ClientShellState {
                     return;
                 }
                 if action == crate::input::KeybindAction::ClosePane {
-                    if let Some(pane_id) = self
-                        .snapshot
-                        .as_deref()
-                        .and_then(|snapshot| snapshot.focused_pane_id.clone())
-                    {
+                    if let Some(pane_id) = self.focused_pane_id() {
                         self.request_pane_close(pane_id, outcome);
                     }
                     return;
@@ -210,13 +200,14 @@ impl ClientShellState {
                 let Some(snapshot) = self.snapshot.as_deref() else {
                     return;
                 };
+                let focused_pane_id = self.visible_focused_pane_id_in(snapshot);
                 let selection = (action == crate::protocol::ClientShellCommandAction::PluginAction)
                     .then(|| {
                         let selection = self.selection.as_ref()?;
                         if !selection.is_visible() {
                             return None;
                         }
-                        if snapshot.focused_pane_id.as_deref() != Some(selection.pane_id.as_str()) {
+                        if focused_pane_id.as_deref() != Some(selection.pane_id.as_str()) {
                             return None;
                         }
                         let content_revision = self
@@ -245,7 +236,7 @@ impl ClientShellState {
                     command_id,
                     workspace_id: snapshot.focused_workspace_id.clone(),
                     tab_id: snapshot.focused_tab_id.clone(),
-                    pane_id: snapshot.focused_pane_id.clone(),
+                    pane_id: focused_pane_id,
                     selection,
                 };
                 if action == crate::protocol::ClientShellCommandAction::Popup {
@@ -895,9 +886,15 @@ impl ClientShellState {
                 | KeybindAction::FocusPaneDown
                 | KeybindAction::FocusPaneUp
                 | KeybindAction::FocusPaneRight
-        ) && self.focus_direction_lands_on_dock(direction(action)?)
+                | KeybindAction::SwapPaneLeft
+                | KeybindAction::SwapPaneDown
+                | KeybindAction::SwapPaneUp
+                | KeybindAction::SwapPaneRight
+        ) && self.direction_lands_on_dock(direction(action)?)
         {
-            // Stock herdr's sidebar is not a pane: moving toward it is a no-op.
+            // Stock herdr's sidebar is not a pane: moving or swapping toward it
+            // is a no-op. Swapping would hand the dock the large slot and the
+            // real pane the sleep terminal's sliver.
             return None;
         }
 
@@ -919,9 +916,9 @@ impl ClientShellState {
                 if agents.is_empty() {
                     return None;
                 }
-                let current = agents.iter().position(|pane_id| {
-                    Some(pane_id.as_str()) == snapshot.focused_pane_id.as_deref()
-                });
+                let current = agents
+                    .iter()
+                    .position(|pane_id| Some(pane_id.as_str()) == focused_pane.as_deref());
                 let next = match (current, action) {
                     (Some(current), KeybindAction::PreviousAgent) => {
                         (current + agents.len() - 1) % agents.len()
@@ -1075,10 +1072,13 @@ impl ClientShellState {
             }
             KeybindAction::CyclePaneNext | KeybindAction::CyclePanePrevious => {
                 let focused_tab = focused_tab?;
+                let dock_pane_id = self.docked_sidebar_pane().map(|pane| pane.pane_id.as_str());
                 let panes = snapshot
                     .panes
                     .iter()
-                    .filter(|pane| pane.tab_id == focused_tab)
+                    .filter(|pane| {
+                        pane.tab_id == focused_tab && Some(pane.pane_id.as_str()) != dock_pane_id
+                    })
                     .collect::<Vec<_>>();
                 if panes.is_empty() {
                     return None;
@@ -1099,7 +1099,9 @@ impl ClientShellState {
             }
             KeybindAction::LastPane => {
                 let pane_id = self.previous_pane_id.as_ref()?;
+                let dock_pane_id = self.docked_sidebar_pane().map(|pane| pane.pane_id.as_str());
                 if Some(pane_id.as_str()) == focused_pane.as_deref()
+                    || Some(pane_id.as_str()) == dock_pane_id
                     || !snapshot.panes.iter().any(|pane| &pane.pane_id == pane_id)
                 {
                     return None;
@@ -1132,9 +1134,75 @@ impl ClientShellState {
 }
 
 impl ClientShellState {
+    pub(super) fn toggle_sidebar_collapsed(&mut self, outcome: &mut ClientShellInput) {
+        // While zoomed the dock is not shown; its split width must stay put so
+        // unzooming returns the same layout.
+        if self.docked_sidebar_pane().is_some() && self.focused_tab_is_zoomed() {
+            return;
+        }
+        let docked = self.has_docked_sidebar();
+        let was_collapsed = self.sidebar_collapsed;
+        self.sidebar_collapsed = !was_collapsed;
+        self.sidebar_collapsed_manual = true;
+        self.reveal_navigation_workspace = true;
+        if let Some(method) = self.docked_sidebar_collapse_method(was_collapsed) {
+            self.push_endpoint_method(method, outcome);
+        }
+        // A docked sidebar's surface size does not change here; the pane split
+        // resize reports new geometry on its own. Non-docked chrome needs the
+        // surface re-requested for its new width.
+        if !docked {
+            self.invalidate_pane_surface();
+        }
+        outcome.repaint = true;
+        outcome.resize = true;
+        self.persist_chrome_preferences(outcome);
+    }
+
+    /// Collapsing the chrome frees a column; a docked sidebar has to free the
+    /// same space through the pane split, because the split owns its width.
+    fn docked_sidebar_collapse_method(
+        &mut self,
+        was_collapsed: bool,
+    ) -> Option<crate::api::schema::Method> {
+        if !self.has_docked_sidebar() {
+            return None;
+        }
+        let dock_pane_id = self.docked_sidebar_pane()?.pane_id.clone();
+        let surface_width = self.pane_surface.as_ref()?.frame.width;
+        let current = self.docked_sidebar_width()?;
+        let target = if was_collapsed {
+            self.docked_sidebar_restore_width
+                .take()
+                .unwrap_or(self.sidebar_width)
+                .max(super::state::COLLAPSED_SIDEBAR_WIDTH.saturating_add(1))
+        } else {
+            self.docked_sidebar_restore_width = Some(current);
+            super::state::COLLAPSED_SIDEBAR_WIDTH
+        };
+        if current == target || surface_width == 0 {
+            return None;
+        }
+        // The dock split spans the surface width in the default layout; the
+        // server clamps the ratio if the pane geometry differs.
+        let amount = f32::from(current.abs_diff(target)) / f32::from(surface_width);
+        let direction = if target > current {
+            crate::api::schema::PaneDirection::Right
+        } else {
+            crate::api::schema::PaneDirection::Left
+        };
+        Some(crate::api::schema::Method::PaneResize(
+            crate::api::schema::PaneResizeParams {
+                pane_id: Some(dock_pane_id),
+                direction,
+                amount: Some(amount),
+            },
+        ))
+    }
+
     /// True when the nearest pane in `direction` is the docked-sidebar slot,
-    /// which is client chrome and must not take keyboard focus.
-    fn focus_direction_lands_on_dock(&self, direction: crate::api::schema::PaneDirection) -> bool {
+    /// which is client chrome and must not take keyboard focus or swaps.
+    fn direction_lands_on_dock(&self, direction: crate::api::schema::PaneDirection) -> bool {
         use crate::api::schema::PaneDirection;
         let (Some(surface), Some(dock), Some(focused)) = (
             self.pane_surface.as_ref(),
@@ -1148,14 +1216,7 @@ impl ClientShellState {
                 .panes
                 .iter()
                 .find(|pane| pane.pane_id == pane_id)
-                .map(|pane| {
-                    Rect::new(
-                        pane.rect.x,
-                        pane.rect.y,
-                        pane.rect.width,
-                        pane.rect.height,
-                    )
-                })
+                .map(|pane| Rect::new(pane.rect.x, pane.rect.y, pane.rect.width, pane.rect.height))
         };
         let (Some(focus), Some(dock_rect)) = (rect_of(&focused), rect_of(&dock.pane_id)) else {
             return false;

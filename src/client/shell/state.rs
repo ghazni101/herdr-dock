@@ -3,6 +3,13 @@ use crate::protocol::ClientShellPane;
 
 pub(super) const DOCKED_SIDEBAR_LABEL: &str = "herdr:sidebar";
 pub(super) const DOCKED_MAIN_LABEL: &str = "main";
+/// Column count of the compact sidebar and of a collapsed dock slot.
+pub(super) const COLLAPSED_SIDEBAR_WIDTH: u16 = 4;
+/// A dock wider than this always renders expanded, even while the preference
+/// says collapsed: the pane split owns the width and may not have moved yet.
+/// A pane split clamps at a 10% ratio, so the compact dock can be wider than
+/// the chrome compact width (4) on a wide terminal.
+pub(super) const DOCKED_COLLAPSED_MAX_WIDTH: u16 = 12;
 
 pub(super) const MIN_TAB_WIDTH: u16 = 8;
 pub(super) const NEW_TAB_WIDTH: u16 = 3;
@@ -877,6 +884,8 @@ pub(crate) struct ClientShellState {
     pub(super) sidebar_collapsed_manual: bool,
     pub(super) sidebar_width: u16,
     pub(super) sidebar_width_manual: bool,
+    /// Dock width to restore when a collapsed docked sidebar expands again.
+    pub(super) docked_sidebar_restore_width: Option<u16>,
     pub(super) sidebar_section_split: f32,
     pub(super) sidebar_section_split_manual: bool,
     pub(super) agent_panel_sort_manual: bool,
@@ -996,6 +1005,74 @@ pub(super) struct WorkspaceEntry {
     pub(super) last_child: bool,
 }
 
+pub(super) fn docked_sidebar_pane_in(
+    snapshot: &crate::protocol::ClientShellSnapshot,
+) -> Option<&ClientShellPane> {
+    let tab_id = snapshot.focused_tab_id.as_deref()?;
+    snapshot
+        .panes
+        .iter()
+        .find(|pane| pane.tab_id == tab_id && pane.label.as_deref() == Some(DOCKED_SIDEBAR_LABEL))
+}
+
+/// Resolve the user-visible focused pane for a snapshot, optionally using the
+/// live pane surface for the geometric fallback.
+pub(super) fn visible_focused_pane_id_for(
+    snapshot: &crate::protocol::ClientShellSnapshot,
+    surface: Option<&crate::protocol::PaneSurfaceFrame>,
+) -> Option<String> {
+    let focused = snapshot.focused_pane_id.as_deref()?;
+    match docked_sidebar_pane_in(snapshot) {
+        Some(dock) if dock.pane_id == focused => {
+            Some(primary_pane_id_for_dock(snapshot, surface, dock))
+        }
+        _ => Some(focused.to_owned()),
+    }
+}
+
+/// Resolve the user-visible pane when server focus rests on the dock slot.
+/// The labelled `main` pane wins, then the largest pane in the same tab, then
+/// the first remaining pane: the plugin's label is a hint, not a requirement.
+fn primary_pane_id_for_dock(
+    snapshot: &crate::protocol::ClientShellSnapshot,
+    surface: Option<&crate::protocol::PaneSurfaceFrame>,
+    dock: &ClientShellPane,
+) -> String {
+    let candidates = snapshot
+        .panes
+        .iter()
+        .filter(|pane| pane.tab_id == dock.tab_id && pane.pane_id != dock.pane_id)
+        .collect::<Vec<_>>();
+    if let Some(main) = candidates
+        .iter()
+        .find(|pane| pane.label.as_deref() == Some(DOCKED_MAIN_LABEL))
+    {
+        return main.pane_id.clone();
+    }
+    if let Some(surface) = surface {
+        let largest = candidates
+            .iter()
+            .filter_map(|pane| {
+                let info = surface
+                    .panes
+                    .iter()
+                    .find(|visible| visible.pane_id == pane.pane_id)?;
+                Some((
+                    u32::from(info.rect.width) * u32::from(info.rect.height),
+                    pane.pane_id.as_str(),
+                ))
+            })
+            .max_by_key(|(area, _)| *area);
+        if let Some((_, pane_id)) = largest {
+            return pane_id.to_owned();
+        }
+    }
+    candidates
+        .first()
+        .map(|pane| pane.pane_id.clone())
+        .unwrap_or_else(|| dock.pane_id.clone())
+}
+
 impl ClientShellState {
     pub(crate) fn new(mut config: ClientShellConfig) -> Self {
         let preferences = config.preferences.clone();
@@ -1051,6 +1128,7 @@ impl ClientShellState {
             sidebar_collapsed_manual: preferences.sidebar_collapsed.is_some(),
             sidebar_width,
             sidebar_width_manual: preferences.sidebar_width.is_some(),
+            docked_sidebar_restore_width: None,
             sidebar_section_split,
             sidebar_section_split_manual: preferences.sidebar_section_split.is_some(),
             agent_panel_sort_manual: preferences.agent_panel_sort.is_some(),
@@ -1225,15 +1303,51 @@ impl ClientShellState {
     /// A pane labelled with this marker is a geometry slot for the client-drawn
     /// sidebar (see `docked_sidebar_pane`). The pane's own terminal is ignored.
     pub(super) fn docked_sidebar_pane(&self) -> Option<&ClientShellPane> {
-        let snapshot = self.snapshot.as_deref()?;
-        let tab_id = snapshot.focused_tab_id.as_deref()?;
-        snapshot.panes.iter().find(|pane| {
-            pane.tab_id == tab_id && pane.label.as_deref() == Some(DOCKED_SIDEBAR_LABEL)
-        })
+        docked_sidebar_pane_in(self.snapshot.as_deref()?)
     }
 
+    /// The dock slot only exists while its tab shows the split layout. A zoomed
+    /// tab projects the focused pane over the whole surface, so the chrome
+    /// sidebar has to come back instead of leaving an empty column.
     pub(super) fn has_docked_sidebar(&self) -> bool {
-        self.docked_sidebar_pane().is_some()
+        self.docked_sidebar_pane().is_some() && !self.focused_tab_is_zoomed()
+    }
+
+    pub(super) fn focused_tab_is_zoomed(&self) -> bool {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return false;
+        };
+        snapshot
+            .tabs
+            .iter()
+            .find(|tab| Some(tab.tab_id.as_str()) == snapshot.focused_tab_id.as_deref())
+            .is_some_and(|tab| tab.zoomed)
+    }
+
+    /// The pane the client should act on for the current snapshot. Server focus
+    /// can land on the dock slot (a `sleep` terminal); user-visible focus then
+    /// belongs to the tab's primary pane.
+    pub(super) fn visible_focused_pane_id(&self) -> Option<String> {
+        self.visible_focused_pane_id_in(self.snapshot.as_deref()?)
+    }
+
+    pub(super) fn visible_focused_pane_id_in(
+        &self,
+        snapshot: &ClientShellSnapshot,
+    ) -> Option<String> {
+        visible_focused_pane_id_for(snapshot, self.pane_surface.as_ref())
+    }
+
+    /// Width of the docked sidebar pane, used when collapse has to move the
+    /// pane split because the pane split owns the dock width.
+    pub(super) fn docked_sidebar_width(&self) -> Option<u16> {
+        let dock = self.docked_sidebar_pane()?;
+        self.pane_surface
+            .as_ref()?
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id == dock.pane_id)
+            .map(|pane| pane.rect.width)
     }
 
     pub(super) fn layout(&self, cols: u16, rows: u16) -> ClientShellLayout {
@@ -1259,6 +1373,7 @@ impl ClientShellState {
         self.hits = ShellHitMap::default();
         self.pane_surface = None;
         self.pending_pane_surface = None;
+        self.docked_sidebar_restore_width = None;
         self.input_leases = ClientInputLeases::default();
         self.popup_terminal_id = None;
         self.chrome_drag = None;
@@ -1404,13 +1519,15 @@ impl ClientShellState {
                 .flatten();
             self.reset_endpoint_projection();
             self.navigate_workspace_id = preview;
-        } else if let Some(previous) = self
-            .snapshot
-            .as_deref()
-            .and_then(|current| current.focused_pane_id.as_ref())
-            .filter(|previous| Some(previous.as_str()) != snapshot.focused_pane_id.as_deref())
-        {
-            self.previous_pane_id = Some(previous.clone());
+        } else if let Some(previous) = {
+            let previous = self
+                .snapshot
+                .as_deref()
+                .and_then(|current| self.visible_focused_pane_id_in(current));
+            let next = self.visible_focused_pane_id_in(&snapshot);
+            previous.filter(|previous| Some(previous.as_str()) != next.as_deref())
+        } {
+            self.previous_pane_id = Some(previous);
         }
         if snapshot_keybindings_changed {
             if let Err(err) = self.config.apply_snapshot_keybindings(
@@ -1458,8 +1575,9 @@ impl ClientShellState {
         {
             self.reveal_focused_tab = true;
         }
+        let visible_focused_pane = self.visible_focused_pane_id_in(&snapshot);
         let selection_focus_lost = if let Some(gesture) = self.word_selection_gesture.as_mut() {
-            let focused_pane = snapshot.focused_pane_id.as_deref();
+            let focused_pane = visible_focused_pane.as_deref();
             // Remember confirmed focus across intermediate snapshots with no
             // focused pane, without rejecting the gesture's in-flight focus request.
             gesture.focus_confirmed |= focused_pane == Some(gesture.pane_id.as_str());
@@ -1471,7 +1589,7 @@ impl ClientShellState {
                     && focused_pane.is_some_and(|pane_id| pane_id != gesture.pane_id))
         } else {
             self.selection.as_ref().is_some_and(|selection| {
-                snapshot.focused_pane_id.as_deref() != Some(selection.pane_id.as_str())
+                visible_focused_pane.as_deref() != Some(selection.pane_id.as_str())
                     || !snapshot
                         .panes
                         .iter()
@@ -1495,7 +1613,7 @@ impl ClientShellState {
                 .panes
                 .iter()
                 .any(|pane| pane.pane_id == copy_pane_id);
-            let pane_focused = snapshot.focused_pane_id.as_deref() == Some(copy_pane_id.as_str());
+            let pane_focused = visible_focused_pane.as_deref() == Some(copy_pane_id.as_str());
             if !pane_exists {
                 self.copy_mode = None;
                 self.reset_copy_pipeline();

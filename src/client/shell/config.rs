@@ -405,7 +405,7 @@ impl ClientShellConfig {
             0
         } else if sidebar_collapsed {
             match self.sidebar_collapsed_mode {
-                SidebarCollapsedModeConfig::Compact => 4,
+                SidebarCollapsedModeConfig::Compact => super::state::COLLAPSED_SIDEBAR_WIDTH,
                 SidebarCollapsedModeConfig::Hidden => 0,
             }
         } else {

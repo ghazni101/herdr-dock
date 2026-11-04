@@ -149,9 +149,8 @@ impl ClientShellState {
         let Some(pane) = snapshot.panes.iter().find(|pane| pane.pane_id == pane_id) else {
             return;
         };
-        let source_pane_id = snapshot
-            .focused_pane_id
-            .clone()
+        let source_pane_id = self
+            .visible_focused_pane_id_in(snapshot)
             .filter(|focused| focused != &pane_id);
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Pane {

@@ -432,7 +432,7 @@ impl ClientShellState {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return;
         };
-        let Some(pane_id) = snapshot.focused_pane_id.as_deref() else {
+        let Some(pane_id) = self.visible_focused_pane_id_in(snapshot) else {
             return;
         };
         let Some(pane) = snapshot.panes.iter().find(|pane| pane.pane_id == pane_id) else {

@@ -323,11 +323,18 @@ pub(super) fn navigator_rows(
             }
             let mut panes_by_tab = HashMap::new();
             for pane in &snapshot.panes {
+                // The dock slot is client chrome, not a navigable terminal.
+                if pane.label.as_deref() == Some(super::state::DOCKED_SIDEBAR_LABEL) {
+                    continue;
+                }
                 panes_by_tab
                     .entry(pane.tab_id.as_str())
                     .or_insert_with(Vec::new)
                     .push(pane);
             }
+            let visible_focused = (endpoint.endpoint_id == *active_endpoint_id)
+                .then(|| super::state::visible_focused_pane_id_for(snapshot, None))
+                .flatten();
             for workspace in &snapshot.workspaces {
                 let workspace_matches = endpoint_query_matches
                     || text(&workspace.label)
@@ -410,8 +417,7 @@ pub(super) fn navigator_rows(
                                 agent: agent_kind.map(str::to_owned),
                                 status: Some(status),
                                 stale,
-                                current: endpoint.endpoint_id == *active_endpoint_id
-                                    && snapshot.focused_pane_id.as_deref() == Some(&pane.pane_id),
+                                current: visible_focused.as_deref() == Some(pane.pane_id.as_str()),
                                 target: ClientNavigatorTarget::Pane {
                                     endpoint_id: endpoint.endpoint_id.clone(),
                                     pane_id: pane.pane_id.clone(),

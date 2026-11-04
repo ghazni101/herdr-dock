@@ -55,4 +55,9 @@ pub struct ServerCapabilities {
     /// Supports connection-scoped `server.ssh_agent.register` on the local JSON API.
     #[serde(default)]
     pub ssh_agent_registration: bool,
+    /// Fork capability: the client understands the `herdr:sidebar` pane slot,
+    /// which plugins use for a docked sidebar. Never part of the upstream
+    /// version identity, so update and release-notes comparisons stay exact.
+    #[serde(default)]
+    pub docked_sidebar: bool,
 }

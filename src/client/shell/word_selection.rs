@@ -26,14 +26,12 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         let row = crate::selection::absolute_row_for_viewport(viewport_row, hit.scroll);
+        let focus_confirmed =
+            self.visible_focused_pane_id().as_deref() == Some(hit.pane_id.as_str());
         self.word_selection_generation = self.word_selection_generation.saturating_add(1);
         self.word_selection_gesture = Some(ClientWordSelection {
             pane_id: hit.pane_id.clone(),
-            focus_confirmed: self
-                .snapshot
-                .as_deref()
-                .and_then(|snapshot| snapshot.focused_pane_id.as_deref())
-                == Some(hit.pane_id.as_str()),
+            focus_confirmed,
             anchor: (row, col),
             anchor_bounds: None,
             cursor: (row, col),

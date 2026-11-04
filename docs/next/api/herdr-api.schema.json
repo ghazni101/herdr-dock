@@ -10424,6 +10424,11 @@
               "default": false,
               "type": "boolean"
             },
+            "docked_sidebar": {
+              "default": false,
+              "description": "Fork capability: the client understands the `herdr:sidebar` pane slot,\nwhich plugins use for a docked sidebar. Never part of the upstream\nversion identity, so update and release-notes comparisons stay exact.",
+              "type": "boolean"
+            },
             "endpoint_protocol_generation": {
               "description": "Stable client-owned endpoint generation supported by this server.",
               "format": "uint32",

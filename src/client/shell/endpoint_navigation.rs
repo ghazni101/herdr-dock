@@ -186,13 +186,10 @@ impl ClientShellState {
                     index
                 }
                 KeybindAction::PreviousAgent | KeybindAction::NextAgent => {
-                    let focused = self
-                        .snapshot
-                        .as_deref()
-                        .and_then(|snapshot| snapshot.focused_pane_id.as_deref());
+                    let focused = self.focused_pane_id();
                     let current = agents.iter().position(|target| {
                         target.endpoint_id == self.active_endpoint_id
-                            && Some(target.pane_id.as_str()) == focused
+                            && Some(target.pane_id.as_str()) == focused.as_deref()
                     });
                     match (current, action) {
                         (Some(index), KeybindAction::PreviousAgent) => {

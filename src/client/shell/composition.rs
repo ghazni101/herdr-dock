@@ -187,8 +187,9 @@ impl ClientShellState {
         }
         let layout = self.layout(cols, rows);
         let dock_pane_id = self
-            .docked_sidebar_pane()
-            .map(|pane| pane.pane_id.clone());
+            .has_docked_sidebar()
+            .then(|| self.docked_sidebar_pane().map(|pane| pane.pane_id.clone()))
+            .flatten();
         if self.last_tab_bar_width != Some(layout.tab_bar.width) {
             self.last_tab_bar_width = Some(layout.tab_bar.width);
             self.reveal_focused_tab = true;
@@ -280,18 +281,11 @@ impl ClientShellState {
         // The dock pane is a geometry slot: the client draws the sidebar over
         // it, so its terminal must not receive mouse hits or a cursor.
         if let Some(dock_pane_id) = dock_pane_id.as_deref() {
-            self.hits
-                .panes
-                .retain(|hit| hit.pane_id != dock_pane_id);
+            self.hits.panes.retain(|hit| hit.pane_id != dock_pane_id);
         }
         let dock_rect = dock_pane_id
             .as_deref()
-            .and_then(|dock_id| {
-                surface
-                    .panes
-                    .iter()
-                    .find(|pane| pane.pane_id == dock_id)
-            })
+            .and_then(|dock_id| surface.panes.iter().find(|pane| pane.pane_id == dock_id))
             .map(|pane| {
                 Rect::new(
                     layout.pane_surface.x.saturating_add(pane.rect.x),
@@ -371,7 +365,7 @@ impl ClientShellState {
         });
         blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
         if let Some(dock_rect) = dock_rect {
-            let mut sidebar_buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
+            let mut sidebar_buffer = Buffer::empty(dock_rect);
             render::render_docked_sidebar(
                 &mut sidebar_buffer,
                 dock_rect,
@@ -403,9 +397,7 @@ impl ClientShellState {
                 },
                 &mut self.hits,
             );
-            let sidebar_frame =
-                FrameData::from_ratatui_buffer_with_hyperlinks(&sidebar_buffer, None, &[]);
-            blit_full_frame_region(&mut frame, &sidebar_frame, dock_rect);
+            blit_buffer_region(&mut frame, &sidebar_buffer, dock_rect);
             // Width is owned by the pane split, not the chrome drag handle.
             self.hits.sidebar_divider = Rect::default();
         }

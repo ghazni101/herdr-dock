@@ -243,31 +243,29 @@ fn panel_contrast_fg(palette: &Palette) -> ratatui::style::Color {
     }
 }
 
-/// Copy the same-size region of a full-frame source into a full-frame target.
-/// Used for client-owned chrome (the docked sidebar) rendered over a pane slot.
-fn blit_full_frame_region(target: &mut FrameData, source: &FrameData, area: Rect) {
-    let hyperlink_base = target.hyperlinks.len() as u32;
-    target.hyperlinks.extend(source.hyperlinks.iter().cloned());
-
-    let bottom = area.bottom().min(target.height).min(source.height);
-    let right = area.right().min(target.width).min(source.width);
-    for y in area.y..bottom {
-        for x in area.x..right {
-            let index = y as usize * target.width as usize + x as usize;
-            let Some(source_cell) = source.cells.get(index) else {
+/// Copy a ratatui buffer into the frame at `area`. The buffer keeps the target
+/// frame's absolute coordinates (`Buffer::empty(area)` has its origin at the
+/// dock), so render callbacks and hit maps need no translation.
+fn blit_buffer_region(target: &mut FrameData, source: &Buffer, area: Rect) {
+    let source_area = source.area;
+    let copy_width = source_area.width.min(area.width);
+    let copy_height = source_area.height.min(area.height);
+    for row in 0..copy_height {
+        for col in 0..copy_width {
+            let x = area.x.saturating_add(col);
+            let y = area.y.saturating_add(row);
+            let Some(source_cell) = source.cell((x, y)) else {
                 continue;
             };
-            let mut cell = source_cell.clone();
-            cell.hyperlink = source_cell.hyperlink.and_then(|hyperlink| {
-                ((hyperlink as usize) < source.hyperlinks.len())
-                    .then_some(hyperlink_base + hyperlink)
-            });
-            if let Some(target_cell) = target.cells.get_mut(index) {
-                *target_cell = cell;
-            }
+            let Some(target_cell) = target
+                .cells
+                .get_mut(y as usize * target.width as usize + x as usize)
+            else {
+                continue;
+            };
+            *target_cell = crate::protocol::CellData::from_ratatui_cell(source_cell);
         }
     }
-
     if target
         .cursor
         .as_ref()

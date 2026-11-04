@@ -1014,25 +1014,26 @@ impl ClientShellState {
         let Some(surface) = self.pane_surface.as_ref() else {
             return;
         };
-        if surface.panes.is_empty() {
+        let dock_pane_id = self.docked_sidebar_pane().map(|pane| pane.pane_id.as_str());
+        let panes = surface
+            .panes
+            .iter()
+            .filter(|pane| Some(pane.pane_id.as_str()) != dock_pane_id)
+            .collect::<Vec<_>>();
+        if panes.is_empty() {
             return;
         }
-        let current = snapshot
-            .focused_pane_id
+        let focused = self.visible_focused_pane_id_in(snapshot);
+        let current = focused
             .as_deref()
-            .and_then(|focused| {
-                surface
-                    .panes
-                    .iter()
-                    .position(|pane| pane.pane_id == focused)
-            })
+            .and_then(|focused| panes.iter().position(|pane| pane.pane_id == focused))
             .unwrap_or(0);
         let next = if reverse {
-            (current + surface.panes.len() - 1) % surface.panes.len()
+            (current + panes.len() - 1) % panes.len()
         } else {
-            (current + 1) % surface.panes.len()
+            (current + 1) % panes.len()
         };
-        let pane_id = surface.panes[next].pane_id.clone();
+        let pane_id = panes[next].pane_id.clone();
         self.push_endpoint_method(
             crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget { pane_id }),
             outcome,
@@ -1085,25 +1086,11 @@ impl ClientShellState {
         }
     }
 
+    /// The pane the client should act on. Server focus can land on the dock
+    /// slot, which is client chrome with a `sleep` terminal; user-visible focus
+    /// then belongs to the tab's primary pane.
     pub(super) fn focused_pane_id(&self) -> Option<String> {
-        let snapshot = self.snapshot.as_deref()?;
-        let focused = snapshot.focused_pane_id.clone()?;
-        // The dock slot is client chrome, not a terminal. If server focus
-        // lands on it (e.g. after closing the focused pane), keep input and
-        // pane actions on the tab's main pane instead of its sleep process.
-        if self
-            .docked_sidebar_pane()
-            .is_some_and(|dock| dock.pane_id == focused)
-        {
-            let tab_id = snapshot.focused_tab_id.as_deref();
-            if let Some(main) = snapshot.panes.iter().find(|pane| {
-                Some(pane.tab_id.as_str()) == tab_id
-                    && pane.label.as_deref() == Some(DOCKED_MAIN_LABEL)
-            }) {
-                return Some(main.pane_id.clone());
-            }
-        }
-        Some(focused)
+        self.visible_focused_pane_id()
     }
 
     pub(crate) fn clipboard_image_target(

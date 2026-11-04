@@ -43,8 +43,13 @@ pub(super) fn render_docked_sidebar(
     if area.is_empty() {
         return;
     }
+    // Collapse means the dock should shrink to the compact width. Until the
+    // pane split actually moves, a wide slot keeps the expanded layout instead
+    // of painting a compact strip into empty space.
+    let collapsed =
+        state.sidebar_collapsed && area.width <= super::state::DOCKED_COLLAPSED_MAX_WIDTH;
     if state.endpoints.len() > 1 {
-        if state.sidebar_collapsed {
+        if collapsed {
             super::endpoint_sidebar::render_collapsed(buffer, area, config, state, hits);
         } else {
             super::endpoint_sidebar::render_expanded(
@@ -56,7 +61,7 @@ pub(super) fn render_docked_sidebar(
                 hits,
             );
         }
-    } else if state.sidebar_collapsed {
+    } else if collapsed {
         render_collapsed_sidebar(
             buffer,
             area,
