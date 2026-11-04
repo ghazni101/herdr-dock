@@ -633,6 +633,7 @@ fn restore_tab(
             continue;
         }
 
+        let dock_argv = dock_slot.then(crate::app::dock_slot_argv);
         let runtime_result = {
             #[cfg(unix)]
             if let Some(imported) = imported_runtime {
@@ -648,14 +649,13 @@ fn restore_tab(
                     runtime_context.render_notify.clone(),
                     runtime_context.render_dirty.clone(),
                 )
-            } else if dock_slot {
-                let argv = crate::app::dock_slot_argv();
+            } else if let Some(argv) = dock_argv.as_deref() {
                 TerminalRuntime::spawn_argv_command(
                     *id,
                     rows,
                     cols,
                     cwd.clone(),
-                    &argv,
+                    argv,
                     &launch_env,
                     crate::pane::AgentDetection::Enabled,
                     runtime_context.scrollback_limit_bytes,
@@ -685,14 +685,13 @@ fn restore_tab(
 
             #[cfg(not(unix))]
             {
-                if dock_slot {
-                    let argv = crate::app::dock_slot_argv();
+                if let Some(argv) = dock_argv.as_deref() {
                     TerminalRuntime::spawn_argv_command(
                         *id,
                         rows,
                         cols,
                         cwd.clone(),
-                        &argv,
+                        argv,
                         &launch_env,
                         crate::pane::AgentDetection::Enabled,
                         runtime_context.scrollback_limit_bytes,
@@ -730,8 +729,8 @@ fn restore_tab(
                     if let Some(argv) = saved_launch_argv {
                         terminal = terminal.with_launch_argv(argv).with_respawn_shell_on_exit();
                     }
-                } else if dock_slot {
-                    terminal = terminal.with_launch_argv(crate::app::dock_slot_argv());
+                } else if let Some(argv) = dock_argv {
+                    terminal = terminal.with_launch_argv(argv);
                 }
                 if let Some(label) = saved_label {
                     terminal.set_manual_label(label);
