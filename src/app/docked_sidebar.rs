@@ -12,7 +12,7 @@
 use ratatui::layout::Direction;
 
 use super::App;
-use crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL;
+use crate::api::schema::{DOCKED_MAIN_PANE_LABEL, DOCKED_SIDEBAR_PANE_LABEL};
 use crate::layout::{Node, PaneId};
 
 /// Dock width used when no existing dock shows the width to inherit.
@@ -21,6 +21,55 @@ const DEFAULT_DOCK_COLUMNS: f32 = 26.0;
 impl App {
     pub(super) fn pane_is_dock_slot(&self, ws_idx: usize, pane_id: PaneId) -> bool {
         self.state.pane_is_dock_slot(ws_idx, pane_id)
+    }
+
+    /// Resolve a pane for an operation that did not name a target. A restored
+    /// layout can leave server focus on the dock slot, so an implicit target
+    /// falls back to the tab's primary user pane instead of the chrome slot.
+    /// Explicit dock targets are rejected by their callers, never retargeted.
+    pub(super) fn implicit_operation_pane(&self, ws_idx: usize, pane_id: PaneId) -> Option<PaneId> {
+        if !self.pane_is_dock_slot(ws_idx, pane_id) {
+            return Some(pane_id);
+        }
+        let tab_idx = self
+            .state
+            .workspaces
+            .get(ws_idx)?
+            .find_tab_index_for_pane(pane_id)?;
+        self.primary_pane_in_tab(ws_idx, tab_idx)
+    }
+
+    /// The user's primary pane in a tab: the labelled `main` pane when a
+    /// plugin supplied one, then the largest pane, then the first pane that is
+    /// not a dock slot. The label is a hint, not a requirement.
+    pub(super) fn primary_pane_in_tab(&self, ws_idx: usize, tab_idx: usize) -> Option<PaneId> {
+        let tab = self.state.workspaces.get(ws_idx)?.tabs.get(tab_idx)?;
+        let candidates = tab
+            .layout
+            .pane_ids()
+            .into_iter()
+            .filter(|pane_id| !self.pane_is_dock_slot(ws_idx, *pane_id))
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return None;
+        }
+        let labelled = candidates.iter().copied().find(|pane_id| {
+            tab.terminal_id(*pane_id)
+                .and_then(|terminal_id| self.state.terminals.get(terminal_id))
+                .is_some_and(|terminal| {
+                    terminal.manual_label.as_deref() == Some(DOCKED_MAIN_PANE_LABEL)
+                })
+        });
+        if labelled.is_some() {
+            return labelled;
+        }
+        tab.layout
+            .panes(self.state.new_pane_area())
+            .into_iter()
+            .filter(|pane| candidates.contains(&pane.id))
+            .max_by_key(|pane| u32::from(pane.rect.width) * u32::from(pane.rect.height))
+            .map(|pane| pane.id)
+            .or_else(|| candidates.first().copied())
     }
 
     /// Panes of the tab that are docked-sidebar slots.

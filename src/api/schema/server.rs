@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 /// once the session uses it.
 pub const DOCKED_SIDEBAR_PANE_LABEL: &str = "herdr:sidebar";
 
+/// Label plugin layouts use for the pane the docked sidebar sits beside. It is
+/// a hint for choosing the user's primary pane, never a requirement.
+pub const DOCKED_MAIN_PANE_LABEL: &str = "main";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct PingParams {}
 
