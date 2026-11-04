@@ -389,6 +389,7 @@ impl ClientShellConfig {
         sidebar_collapsed: bool,
         tab_count: usize,
         sidebar_width: u16,
+        docked: bool,
     ) -> ClientShellLayout {
         if cols <= self.mobile_width_threshold {
             let header_height = rows.min(2);
@@ -400,7 +401,9 @@ impl ClientShellConfig {
             };
         }
 
-        let sidebar_width = if sidebar_collapsed {
+        let sidebar_width = if docked {
+            0
+        } else if sidebar_collapsed {
             match self.sidebar_collapsed_mode {
                 SidebarCollapsedModeConfig::Compact => 4,
                 SidebarCollapsedModeConfig::Hidden => 0,
@@ -460,7 +463,7 @@ impl ClientShellConfig {
             .unwrap_or(self.sidebar_width)
             .clamp(min_width, max_width);
         let surface = self
-            .layout(cols, rows, sidebar_collapsed, 0, sidebar_width)
+            .layout(cols, rows, sidebar_collapsed, 0, sidebar_width, false)
             .pane_surface;
         ClientSurfaceSize {
             cols: surface.width.max(1),

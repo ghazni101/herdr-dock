@@ -1,4 +1,7 @@
 use super::*;
+use crate::protocol::ClientShellPane;
+
+pub(super) const DOCKED_SIDEBAR_LABEL: &str = "herdr:sidebar";
 
 pub(super) const MIN_TAB_WIDTH: u16 = 8;
 pub(super) const NEW_TAB_WIDTH: u16 = 3;
@@ -1218,6 +1221,20 @@ impl ClientShellState {
         }
     }
 
+    /// A pane labelled with this marker is a geometry slot for the client-drawn
+    /// sidebar (see `docked_sidebar_pane`). The pane's own terminal is ignored.
+    pub(super) fn docked_sidebar_pane(&self) -> Option<&ClientShellPane> {
+        let snapshot = self.snapshot.as_deref()?;
+        let tab_id = snapshot.focused_tab_id.as_deref()?;
+        snapshot.panes.iter().find(|pane| {
+            pane.tab_id == tab_id && pane.label.as_deref() == Some(DOCKED_SIDEBAR_LABEL)
+        })
+    }
+
+    pub(super) fn has_docked_sidebar(&self) -> bool {
+        self.docked_sidebar_pane().is_some()
+    }
+
     pub(super) fn layout(&self, cols: u16, rows: u16) -> ClientShellLayout {
         self.config.layout(
             cols,
@@ -1225,6 +1242,7 @@ impl ClientShellState {
             self.sidebar_collapsed,
             self.focused_tab_count(),
             self.sidebar_width,
+            self.has_docked_sidebar(),
         )
     }
 

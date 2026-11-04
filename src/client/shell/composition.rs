@@ -186,6 +186,9 @@ impl ClientShellState {
             return None;
         }
         let layout = self.layout(cols, rows);
+        let dock_pane_id = self
+            .docked_sidebar_pane()
+            .map(|pane| pane.pane_id.clone());
         if self.last_tab_bar_width != Some(layout.tab_bar.width) {
             self.last_tab_bar_width = Some(layout.tab_bar.width);
             self.reveal_focused_tab = true;
@@ -274,6 +277,29 @@ impl ClientShellState {
                 pixel_height: pane.pixel_height,
             })
             .collect();
+        // The dock pane is a geometry slot: the client draws the sidebar over
+        // it, so its terminal must not receive mouse hits or a cursor.
+        if let Some(dock_pane_id) = dock_pane_id.as_deref() {
+            self.hits
+                .panes
+                .retain(|hit| hit.pane_id != dock_pane_id);
+        }
+        let dock_rect = dock_pane_id
+            .as_deref()
+            .and_then(|dock_id| {
+                surface
+                    .panes
+                    .iter()
+                    .find(|pane| pane.pane_id == dock_id)
+            })
+            .map(|pane| {
+                Rect::new(
+                    layout.pane_surface.x.saturating_add(pane.rect.x),
+                    layout.pane_surface.y.saturating_add(pane.rect.y),
+                    pane.rect.width,
+                    pane.rect.height,
+                )
+            });
         let topology_signature = pane_surface_topology_signature(surface);
         self.hits.pane_splits = surface
             .splits
@@ -344,6 +370,45 @@ impl ClientShellState {
             frame.cells[start..start + usize::from(bar.width)].to_vec()
         });
         blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
+        if let Some(dock_rect) = dock_rect {
+            let mut sidebar_buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
+            render::render_docked_sidebar(
+                &mut sidebar_buffer,
+                dock_rect,
+                snapshot,
+                &self.config,
+                &mut render::ShellRenderState {
+                    machine_diagnostics: &self.machine_diagnostics,
+                    endpoints: &self.endpoints,
+                    active_endpoint_id: &self.active_endpoint_id,
+                    collapsed_endpoints: &self.collapsed_endpoints,
+                    collapsed_groups: &self.collapsed_groups,
+                    remote_collapsed_groups: &self.remote_collapsed_groups,
+                    workspace_scroll: &mut self.workspace_scroll,
+                    agent_scroll: &mut self.agent_scroll,
+                    tab_scroll: &mut self.tab_scroll,
+                    reveal_focused_workspace: &mut self.reveal_focused_workspace,
+                    reveal_focused_tab: &mut self.reveal_focused_tab,
+                    sidebar_collapsed: self.sidebar_collapsed,
+                    sidebar_section_split: self.sidebar_section_split,
+                    tab_drag_insert_index,
+                    selected_workspace_id: self
+                        .navigate_workspace_id
+                        .as_ref()
+                        .filter(|_| valid_navigation_target)
+                        .or_else(|| pending_workspace_highlight.map(|pending| &pending.target)),
+                    reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
+                    dragged_workspace_id,
+                    workspace_drop_indicator_row,
+                },
+                &mut self.hits,
+            );
+            let sidebar_frame =
+                FrameData::from_ratatui_buffer_with_hyperlinks(&sidebar_buffer, None, &[]);
+            blit_full_frame_region(&mut frame, &sidebar_frame, dock_rect);
+            // Width is owned by the pane split, not the chrome drag handle.
+            self.hits.sidebar_divider = Rect::default();
+        }
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();
         let has_selection = self

@@ -28,6 +28,50 @@ pub(in crate::client::shell) fn render_sidebar_background(
     }
 }
 
+/// Render the client-owned sidebar into an arbitrary rect (a pane slot).
+/// Used when the sidebar is docked inside the tab layout instead of the
+/// full-height left column. Hits are written into `hits` so mouse handling
+/// keeps working at the docked position.
+pub(super) fn render_docked_sidebar(
+    buffer: &mut Buffer,
+    area: Rect,
+    snapshot: &ClientShellSnapshot,
+    config: &ClientShellConfig,
+    state: &mut ShellRenderState<'_>,
+    hits: &mut ShellHitMap,
+) {
+    if area.is_empty() {
+        return;
+    }
+    if state.endpoints.len() > 1 {
+        if state.sidebar_collapsed {
+            super::endpoint_sidebar::render_collapsed(buffer, area, config, state, hits);
+        } else {
+            super::endpoint_sidebar::render_expanded(
+                buffer,
+                area,
+                Some(snapshot),
+                config,
+                state,
+                hits,
+            );
+        }
+    } else if state.sidebar_collapsed {
+        render_collapsed_sidebar(
+            buffer,
+            area,
+            snapshot,
+            config,
+            state
+                .selected_workspace_id
+                .map(|target| target.workspace_id.as_str()),
+            hits,
+        );
+    } else {
+        render_sidebar(buffer, area, snapshot, config, state, hits);
+    }
+}
+
 pub(super) fn render_mode_bar(
     buffer: &mut Buffer,
     pane_area: Rect,

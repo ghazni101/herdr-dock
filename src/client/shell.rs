@@ -243,6 +243,40 @@ fn panel_contrast_fg(palette: &Palette) -> ratatui::style::Color {
     }
 }
 
+/// Copy the same-size region of a full-frame source into a full-frame target.
+/// Used for client-owned chrome (the docked sidebar) rendered over a pane slot.
+fn blit_full_frame_region(target: &mut FrameData, source: &FrameData, area: Rect) {
+    let hyperlink_base = target.hyperlinks.len() as u32;
+    target.hyperlinks.extend(source.hyperlinks.iter().cloned());
+
+    let bottom = area.bottom().min(target.height).min(source.height);
+    let right = area.right().min(target.width).min(source.width);
+    for y in area.y..bottom {
+        for x in area.x..right {
+            let index = y as usize * target.width as usize + x as usize;
+            let Some(source_cell) = source.cells.get(index) else {
+                continue;
+            };
+            let mut cell = source_cell.clone();
+            cell.hyperlink = source_cell.hyperlink.and_then(|hyperlink| {
+                ((hyperlink as usize) < source.hyperlinks.len())
+                    .then_some(hyperlink_base + hyperlink)
+            });
+            if let Some(target_cell) = target.cells.get_mut(index) {
+                *target_cell = cell;
+            }
+        }
+    }
+
+    if target
+        .cursor
+        .as_ref()
+        .is_some_and(|cursor| area.contains((cursor.x, cursor.y).into()))
+    {
+        target.cursor = None;
+    }
+}
+
 fn blit_pane_surface(target: &mut FrameData, source: &FrameData, area: Rect) {
     let copy_width = source.width.min(area.width);
     let copy_height = source.height.min(area.height);
