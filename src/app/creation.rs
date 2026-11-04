@@ -149,6 +149,7 @@ impl App {
         let idx = self.state.workspaces.len() - 1;
         self.state
             .remove_alias_shadowed_by_new_pane(self.state.workspaces[idx].tabs[0].root_pane);
+        self.apply_default_dock_slot(idx, 0);
         let workspace_id = self.state.workspaces[idx].id.clone();
         let root_pane = self.state.workspaces[idx].tabs[0].root_pane.raw();
         crate::logging::workspace_created(&workspace_id, root_pane);
@@ -243,6 +244,7 @@ impl App {
             },
         });
         self.emit_tab_and_pane_created_events(tab, root_pane);
+        self.emit_non_root_pane_created_events(ws_idx, 0);
         self.emit_layout_updated_event(ws_idx, 0);
     }
 
@@ -254,7 +256,35 @@ impl App {
             return;
         };
         self.emit_tab_and_pane_created_events(tab, root_pane);
+        self.emit_non_root_pane_created_events(ws_idx, tab_idx);
         self.emit_layout_updated_event(ws_idx, tab_idx);
+    }
+
+    /// A new tab can start with more than its root pane (the docked-sidebar
+    /// slot); announce those panes after the root one.
+    fn emit_non_root_pane_created_events(&mut self, ws_idx: usize, tab_idx: usize) {
+        let Some(tab) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.tabs.get(tab_idx))
+        else {
+            return;
+        };
+        let root_pane = tab.root_pane;
+        let panes = tab
+            .layout
+            .pane_ids()
+            .into_iter()
+            .filter(|pane_id| *pane_id != root_pane)
+            .filter_map(|pane_id| self.pane_info(ws_idx, pane_id))
+            .collect::<Vec<_>>();
+        for pane in panes {
+            self.emit_event(EventEnvelope {
+                event: EventKind::PaneCreated,
+                data: EventData::PaneCreated { pane },
+            });
+        }
     }
 
     fn emit_tab_and_pane_created_events(

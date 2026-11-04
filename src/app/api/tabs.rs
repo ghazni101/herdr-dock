@@ -98,6 +98,7 @@ impl App {
                 self.state.remove_alias_shadowed_by_new_pane(
                     self.state.workspaces[ws_idx].tabs[tab_idx].root_pane,
                 );
+                self.apply_default_dock_slot(ws_idx, tab_idx);
                 if let Some(label) = label {
                     let workspace_id = self.state.workspaces[ws_idx].id.clone();
                     let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {

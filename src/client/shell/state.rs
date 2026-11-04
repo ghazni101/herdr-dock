@@ -1,7 +1,7 @@
 use super::*;
 use crate::protocol::ClientShellPane;
 
-pub(super) const DOCKED_SIDEBAR_LABEL: &str = "herdr:sidebar";
+pub(super) const DOCKED_SIDEBAR_LABEL: &str = crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL;
 pub(super) const DOCKED_MAIN_LABEL: &str = "main";
 /// Column count of the compact sidebar and of a collapsed dock slot.
 pub(super) const COLLAPSED_SIDEBAR_WIDTH: u16 = 4;
