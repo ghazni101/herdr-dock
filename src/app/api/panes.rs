@@ -3811,7 +3811,7 @@ mod tests {
         assert!(matches!(success.result, ResponseResult::PaneMove { .. }));
         assert_eq!(app.state.workspaces[0].tabs.len(), 1);
         assert!(app.state.workspaces[0].tabs[0].terminal_id(dock).is_none());
-        assert!(app.state.terminals.get(&dock_terminal).is_none());
+        assert!(!app.state.terminals.contains_key(&dock_terminal));
         assert_eq!(dock_flags(&app, 0, 0), vec![true, false]);
         crate::app::api::test_support::shutdown_test_runtimes(&mut app);
     }
@@ -3848,7 +3848,7 @@ mod tests {
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
         assert!(matches!(success.result, ResponseResult::Ok {}));
         assert_eq!(app.state.workspaces[0].tabs.len(), 1);
-        assert!(app.state.terminals.get(&dock_terminal).is_none());
+        assert!(!app.state.terminals.contains_key(&dock_terminal));
         crate::app::api::test_support::shutdown_test_runtimes(&mut app);
     }
 
@@ -3869,7 +3869,7 @@ mod tests {
             });
 
         assert!(app.state.workspaces.is_empty());
-        assert!(app.state.terminals.get(&dock_terminal).is_none());
+        assert!(!app.state.terminals.contains_key(&dock_terminal));
     }
 
     #[test]
