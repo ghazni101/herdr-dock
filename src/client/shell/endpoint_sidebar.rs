@@ -253,6 +253,7 @@ pub(super) fn render_expanded(
         crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
     hits.sidebar_section_divider =
         crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
+    hits.sidebar_section_area = area;
     put_text(
         buffer,
         workspace_area.x,

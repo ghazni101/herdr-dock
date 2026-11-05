@@ -113,6 +113,10 @@ pub(super) struct ShellHitMap {
     pub(super) agent_sort_toggle: Rect,
     pub(super) sidebar_divider: Rect,
     pub(super) sidebar_section_divider: Rect,
+    /// Sidebar rect whose height maps a divider row onto the spaces/agents
+    /// split ratio. Separate from `sidebar_divider`, which the docked posture
+    /// clears because the pane split owns the sidebar width.
+    pub(super) sidebar_section_area: Rect,
     pub(super) sidebar_toggle: Rect,
     pub(super) new_workspace: Rect,
     pub(super) new_tab: Rect,
