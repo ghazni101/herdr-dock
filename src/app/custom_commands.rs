@@ -145,6 +145,12 @@ impl App {
             else {
                 return Err(("pane_not_found", format!("pane not found: {pane_id}")));
             };
+            if self.pane_is_dock_slot(workspace_index, pane) {
+                return Err((
+                    "pane_focus_failed",
+                    "the docked sidebar slot is client chrome and cannot be focused".to_owned(),
+                ));
+            }
             self.validate_client_shell_command_parent_ids(params, workspace_index, tab_index)?;
             self.state.focus_pane_in_workspace(workspace_index, pane);
             return Ok(());
@@ -785,6 +791,34 @@ mod tests {
         let dock = crate::app::api::test_support::dock_tab(&mut app, 0, 0);
         app.state.workspaces[0].tabs[0].layout.focus_pane(dock);
         (app, dock)
+    }
+
+    #[test]
+    fn pane_command_target_rejects_the_dock_slot() {
+        let (mut app, dock) = docked_test_app("pane-command-dock-target");
+        let main = app.state.workspaces[0].tabs[0].root_pane;
+        app.state.workspaces[0].tabs[0].layout.focus_pane(main);
+        install(&mut app, binding(crate::config::CustomCommandAction::Shell));
+        let command_id = app.client_shell_command_manifest()[0].command_id.clone();
+        let workspace_id = app.public_workspace_id(0);
+        let tab_id = app.public_tab_id(0, 0).unwrap();
+        let dock_public = app.public_pane_id(0, dock).unwrap();
+
+        let response = app.handle_command_invoke(
+            "request-dock-target".into(),
+            crate::api::schema::CommandInvokeParams {
+                command_id,
+                workspace_id: Some(workspace_id),
+                tab_id: Some(tab_id),
+                pane_id: Some(dock_public),
+                selection: None,
+            },
+        );
+
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "pane_focus_failed");
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.focused(), main);
+        crate::app::api::test_support::shutdown_test_runtimes(&mut app);
     }
 
     #[tokio::test]

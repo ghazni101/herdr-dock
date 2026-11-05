@@ -899,21 +899,27 @@ impl Workspace {
     }
 
     /// Focus can fall back to a docked-sidebar slot when the pane it came from
-    /// is gone. The slot is client chrome, so move focus to the first real pane.
+    /// is gone. The slot is client chrome, so move focus to the next real pane
+    /// in the order the fallback would have used without the slot.
     fn focus_off_slots(&mut self, tab_idx: usize, is_slot: &impl Fn(PaneId) -> bool) {
         let Some(tab) = self.tabs.get_mut(tab_idx) else {
             return;
         };
-        if !is_slot(tab.layout.focused()) {
+        let focused = tab.layout.focused();
+        if !is_slot(focused) {
             return;
         }
-        if let Some(primary) = tab
-            .layout
-            .pane_ids()
-            .into_iter()
-            .find(|pane| !is_slot(*pane))
-        {
-            tab.layout.focus_pane_without_history(primary);
+        let panes = tab.layout.pane_ids();
+        let Some(slot_idx) = panes.iter().position(|pane| *pane == focused) else {
+            return;
+        };
+        let fallback = panes[slot_idx + 1..]
+            .iter()
+            .find(|pane| !is_slot(**pane))
+            .or_else(|| panes[..slot_idx].iter().rev().find(|pane| !is_slot(**pane)))
+            .copied();
+        if let Some(fallback) = fallback {
+            tab.layout.focus_pane_without_history(fallback);
         }
     }
 
@@ -1540,6 +1546,56 @@ mod tests {
 
         let fourth = ws.test_split(Direction::Horizontal);
         assert_eq!(ws.public_pane_number(fourth), Some(4));
+    }
+
+    #[test]
+    fn closing_a_pane_focuses_the_same_neighbour_with_or_without_the_dock() {
+        let strip = PaneId::alloc();
+        let right = PaneId::alloc();
+        let dock = PaneId::alloc();
+        let main = PaneId::alloc();
+        let top = |bottom: Node| Node::Split {
+            direction: Direction::Vertical,
+            ratio: 0.5,
+            first: Box::new(Node::Split {
+                direction: Direction::Horizontal,
+                ratio: 0.5,
+                first: Box::new(Node::Pane(strip)),
+                second: Box::new(Node::Pane(right)),
+            }),
+            second: Box::new(bottom),
+        };
+        let saved_workspace = |root: Node, panes: &[PaneId]| {
+            let mut ws = Workspace::test_new("saved-layout");
+            let tab = &mut ws.tabs[0];
+            tab.layout = TileLayout::from_saved(root, main);
+            tab.panes = panes
+                .iter()
+                .map(|pane| (*pane, PaneState::new(TerminalId::alloc())))
+                .collect();
+            tab.root_pane = tab.layout.pane_ids()[0];
+            ws
+        };
+
+        let mut docked = saved_workspace(
+            top(Node::Split {
+                direction: Direction::Horizontal,
+                ratio: 0.2,
+                first: Box::new(Node::Pane(dock)),
+                second: Box::new(Node::Pane(main)),
+            }),
+            &[strip, right, dock, main],
+        );
+        assert!(!docked.close_pane(main, |pane| pane == dock));
+        assert_eq!(
+            docked.focused_pane_id(),
+            Some(right),
+            "the dock must not change which real pane the close falls back to"
+        );
+
+        let mut undocked = saved_workspace(top(Node::Pane(main)), &[strip, right, main]);
+        assert!(!undocked.close_pane(main, |_| false));
+        assert_eq!(undocked.focused_pane_id(), Some(right));
     }
 
     #[test]

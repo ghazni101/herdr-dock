@@ -511,6 +511,13 @@ impl App {
         let Some(_tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
             return pane_not_found(id, &target.pane_id);
         };
+        if self.pane_is_dock_slot(ws_idx, pane_id) {
+            return encode_error(
+                id,
+                "pane_focus_failed",
+                "the docked sidebar slot is client chrome and cannot be focused",
+            );
+        }
 
         self.state.focus_pane_in_workspace(ws_idx, pane_id);
         self.state.mark_active_tab_seen();
@@ -4345,8 +4352,9 @@ mod tests {
         assert_eq!(neighbor.neighbor_pane_id, None);
     }
 
-    /// Characterization: `handle_pane_swap` filtered the dock before the helper
-    /// did, so direction swaps already stepped over it.
+    /// Regression: the pre-fix swap filtered the helper's dock result into
+    /// `NoNeighbor`, so it stopped swapping with main once the helper returned
+    /// the dock for strip-to-Down.
     #[test]
     fn pane_swap_direction_skips_the_dock_slot() {
         let (mut app, _public_pane_id) = app_with_test_workspace();
@@ -5209,6 +5217,31 @@ mod tests {
 
         let error: ErrorResponse = serde_json::from_str(&response).unwrap();
         assert_eq!(error.error.code, "pane_not_found");
+    }
+
+    #[test]
+    fn api_pane_focus_rejects_the_dock_slot() {
+        let (mut app, _public_pane_id) = app_with_test_workspace();
+        let dock = dock_first_tab(&mut app);
+        let main = app.state.workspaces[0].tabs[0].root_pane;
+        let dock_public = app.public_pane_id(0, dock).unwrap();
+
+        let response = app.handle_pane_focus(
+            "req".into(),
+            PaneTarget {
+                pane_id: dock_public,
+            },
+        );
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "pane_focus_failed");
+        assert!(
+            error.error.message.contains("sidebar"),
+            "rejection should name the sidebar slot, got {message:?}",
+            message = error.error.message
+        );
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.focused(), main);
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(main));
     }
 
     #[test]
