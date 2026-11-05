@@ -2,6 +2,8 @@ use std::time::{Duration, Instant};
 
 mod agent_view;
 mod agents;
+#[cfg(test)]
+mod dock_policy;
 mod env;
 mod integrations;
 mod layouts;
@@ -28,7 +30,7 @@ enum RuntimeExitAction {
 
 impl App {
     pub(crate) fn handle_internal_event_with_render_impact(&mut self, ev: AppEvent) -> bool {
-        match ev {
+        let changed = match ev {
             AppEvent::GitStatusRefreshed {
                 results,
                 cache_updates,
@@ -54,7 +56,9 @@ impl App {
                 self.handle_internal_event(ev);
                 true
             }
-        }
+        };
+        let normalized = self.normalize_slot_focus();
+        changed || normalized
     }
 
     fn handle_git_status_refreshed(
@@ -960,6 +964,15 @@ impl App {
         &mut self,
         request: crate::api::schema::Request,
     ) -> String {
+        let response = self.dispatch_api_request(request);
+        // Every TUI, CLI, and API mutation ends here. Re-assert the focus
+        // invariant after each one so no operation can leave focus on the
+        // docked sidebar slot, whether or not its handler knows about docks.
+        self.normalize_slot_focus();
+        response
+    }
+
+    fn dispatch_api_request(&mut self, request: crate::api::schema::Request) -> String {
         self.sync_pending_terminal_titles();
         use crate::api::schema::{
             ErrorBody, ErrorResponse, Method, ResponseResult, SuccessResponse,

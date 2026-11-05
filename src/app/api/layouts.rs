@@ -200,6 +200,10 @@ impl App {
             self.state.switch_workspace_tab(ws_idx, new_tab_idx);
             self.state.mode = Mode::Terminal;
         }
+        // A supplied layout can label its root as the dock slot. Normalize
+        // before emitting events or the response so clients never see
+        // `focused: true` for chrome.
+        self.normalize_slot_focus();
         self.schedule_session_save();
         if let Some(tab) = self.tab_info(ws_idx, new_tab_idx) {
             self.emit_event(EventEnvelope {
