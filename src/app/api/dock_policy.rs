@@ -1,9 +1,11 @@
 //! Fork-owned dock policy for the pane-facing API surface.
 //!
-//! The docked sidebar is an ordinary pane whose identity is a mutable label,
-//! so every API operation that can name a pane has to decide what it does with
-//! that slot. The table here is exhaustive over `pane.*`, `command.invoke`,
-//! `plugin.pane_*` and `layout.*`: adding an operation here or upstream fails
+//! The docked sidebar is an ordinary pane that only `pane.dock_sidebar` can
+//! create and only closing the pane can remove: the slot label is reserved in
+//! both directions of `pane.rename` and in `layout.apply`. Every API operation
+//! that can name a pane still has to decide what it does with that slot. The
+//! table here is exhaustive over `pane.*`, `command.invoke`, `plugin.pane_*`
+//! and `layout.*`: adding an operation here or upstream fails
 //! [`every_pane_operation_has_a_dock_policy`] until someone writes its policy
 //! down, instead of the next leak reaching users.
 
@@ -27,8 +29,7 @@ enum DockPolicy {
     /// for the slot so focus never rests on it.
     Retarget,
     /// The operation is served for the slot itself: read-only queries, terminal
-    /// I/O, or dock management such as closing, resizing, and renaming to the
-    /// label.
+    /// I/O, or dock management such as closing and resizing.
     Allow,
 }
 
@@ -82,10 +83,10 @@ const PANE_POLICY: &[Row] = &[
     row("pane.input.set", DockPolicy::Allow, false, false),
     row("pane.link.activate", DockPolicy::Allow, false, false),
     row("pane.link.resolve", DockPolicy::Allow, false, false),
-    // Renaming *to* the label is the plugin's docking API today. The closure
-    // of both rename directions ships with the atomic docking API and the
-    // plugin switch, not with this table.
-    row("pane.rename", DockPolicy::Allow, false, false),
+    // The label is no longer the docking API. `pane.dock_sidebar` creates the
+    // slot and closing the pane is the only undock path, so rename refuses
+    // both writing the label and renaming the slot away.
+    row("pane.rename", DockPolicy::Reject, false, true),
     row("pane.send_text", DockPolicy::Allow, false, false),
     row("pane.send_keys", DockPolicy::Allow, false, false),
     row("pane.send_input", DockPolicy::Allow, false, false),
@@ -101,6 +102,9 @@ const PANE_POLICY: &[Row] = &[
     ),
     row("pane.release_agent", DockPolicy::Allow, false, false),
     row("pane.close", DockPolicy::Allow, true, false),
+    // A dock cannot carry another dock, and docking is the only operation that
+    // creates one, so the slot itself is never a valid docking target.
+    row("pane.dock_sidebar", DockPolicy::Reject, false, true),
     row("pane.wait_for_output", DockPolicy::Allow, false, false),
     row("command.invoke", DockPolicy::Reject, false, true),
     row("plugin.pane.open", DockPolicy::Reject, false, true),
@@ -155,6 +159,7 @@ struct Fixture {
     app: App,
     ids: Ids,
     dock: PaneId,
+    main: PaneId,
     _receivers: Vec<tokio::sync::mpsc::Receiver<bytes::Bytes>>,
 }
 
@@ -181,7 +186,10 @@ fn docked_fixture() -> Fixture {
     app.state.selected = 0;
     app.state.ensure_test_terminals();
     let main = app.state.workspaces[0].tabs[0].root_pane;
-    let dock = crate::app::api::test_support::dock_tab(&mut app, 0, 0);
+    // Create the dock through the public docking call so every classified
+    // operation is exercised against a slot produced by the only writer that
+    // may create one.
+    let dock = dock_via_api(&mut app, main, 0.2);
 
     // A screen fixture keeps the read/copy/link operations meaningful, and the
     // live channel keeps send operations from failing on a closed pipe.
@@ -267,8 +275,35 @@ fn docked_fixture() -> Fixture {
         app,
         ids,
         dock,
+        main,
         _receivers: receivers,
     }
+}
+
+fn dock_via_api(app: &mut App, target: PaneId, ratio: f32) -> PaneId {
+    let pane_id = app
+        .public_pane_id(0, target)
+        .expect("the docking target has a public id");
+    let response = dispatch(
+        app,
+        "pane.dock_sidebar",
+        json!({"pane_id": pane_id, "ratio": ratio}),
+    );
+    let success: SuccessResponse = serde_json::from_str(&response)
+        .unwrap_or_else(|_| panic!("pane.dock_sidebar should create the slot: {response}"));
+    let ResponseResult::PaneInfo { pane } = success.result else {
+        panic!("expected dock pane info");
+    };
+    assert_eq!(
+        pane.label.as_deref(),
+        Some(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL)
+    );
+    app.state.workspaces[0].tabs[0]
+        .layout
+        .pane_ids()
+        .into_iter()
+        .find(|pane_id| app.pane_is_dock_slot(0, *pane_id))
+        .expect("the docking call created the slot")
 }
 
 fn params_for(method: &str, app: &App, ids: &Ids, dock: PaneId) -> Option<Value> {
@@ -345,6 +380,7 @@ fn params_for(method: &str, app: &App, ids: &Ids, dock: PaneId) -> Option<Value>
             "agent": "claude"
         }),
         "pane.close" => json!({"pane_id": ids.dock}),
+        "pane.dock_sidebar" => json!({"pane_id": ids.dock, "ratio": 0.2}),
         // Handled by the API server's wait loop, not the app dispatch.
         "pane.wait_for_output" => return None,
         "command.invoke" => json!({"command_id": ids.command, "pane_id": ids.dock}),
@@ -476,8 +512,9 @@ fn dock_labelled_pane(node: &crate::api::schema::LayoutNode) -> Option<String> {
 }
 
 #[tokio::test]
-async fn layout_apply_reports_focus_on_the_user_pane() {
+async fn layout_apply_cannot_label_a_live_pane() {
     let mut fixture = docked_fixture();
+    let before = fixture.app.state.workspaces[0].tabs[0].layout.pane_ids();
     let response = dispatch(
         &mut fixture.app,
         "layout.apply",
@@ -497,17 +534,203 @@ async fn layout_apply_reports_focus_on_the_user_pane() {
         }),
     );
 
-    let success: SuccessResponse = serde_json::from_str(&response).unwrap();
-    let ResponseResult::LayoutApply { layout } = success.result else {
-        panic!("expected a layout apply result");
-    };
-    let slot = dock_labelled_pane(&layout.root).expect("the supplied slug label is kept");
-    assert_ne!(
-        layout.focused_pane_id, slot,
-        "the response must not report focus on the dock slot"
+    let error: ErrorResponse = serde_json::from_str(&response)
+        .unwrap_or_else(|_| panic!("layout apply must refuse the dock label: {response}"));
+    assert_eq!(error.id, "policy");
+    assert_eq!(error.error.code, "invalid_layout");
+    assert!(
+        error.error.message.contains("pane.dock_sidebar"),
+        "the refusal should name the docking call, got {:?}",
+        error.error.message
     );
+    // The refused layout changed nothing: the tab keeps its panes and its dock,
+    // and no live pane was turned into hidden chrome.
+    assert_eq!(
+        fixture.app.state.workspaces[0].tabs[0].layout.pane_ids(),
+        before
+    );
+    assert!(fixture.app.pane_is_dock_slot(0, fixture.dock));
     assert_focus_off_the_slot(&fixture.app);
     crate::app::api::test_support::shutdown_test_runtimes(&mut fixture.app);
+}
+
+#[tokio::test]
+async fn pane_rename_refuses_the_dock_label_both_directions() {
+    let mut fixture = docked_fixture();
+
+    // Renaming a live pane to the label would hide it behind the sidebar.
+    let response = dispatch(
+        &mut fixture.app,
+        "pane.rename",
+        json!({
+            "pane_id": fixture.ids.main,
+            "label": crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL
+        }),
+    );
+    let error: ErrorResponse = serde_json::from_str(&response)
+        .unwrap_or_else(|_| panic!("rename to the dock label must be refused: {response}"));
+    assert_eq!(error.error.code, "pane_rename_failed");
+    assert!(
+        error.error.message.contains("pane.dock_sidebar")
+            && error.error.message.contains("pane.close"),
+        "the refusal should name the docking and undocking calls, got {:?}",
+        error.error.message
+    );
+    let main_terminal = fixture.app.state.workspaces[0].tabs[0]
+        .terminal_id(fixture.main)
+        .cloned()
+        .expect("main pane terminal");
+    assert!(
+        fixture
+            .app
+            .state
+            .terminals
+            .get(&main_terminal)
+            .is_some_and(|terminal| terminal.manual_label.is_none()),
+        "the refused rename must not label the live pane"
+    );
+    let response = dispatch(
+        &mut fixture.app,
+        "pane.get",
+        json!({"pane_id": fixture.ids.main}),
+    );
+    let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+    let ResponseResult::PaneInfo { pane } = success.result else {
+        panic!("expected pane info");
+    };
+    assert!(pane.focused, "the live pane stays visible and focusable");
+    assert!(pane.label.is_none(), "the live pane keeps its identity");
+
+    // Renaming the slot away would turn chrome into an ordinary pane.
+    let response = dispatch(
+        &mut fixture.app,
+        "pane.rename",
+        json!({"pane_id": fixture.ids.dock}),
+    );
+    let error: ErrorResponse = serde_json::from_str(&response)
+        .unwrap_or_else(|_| panic!("rename-away must be refused: {response}"));
+    assert_eq!(error.error.code, "pane_rename_failed");
+    assert!(
+        error.error.message.contains("sidebar"),
+        "the refusal should name the sidebar slot, got {:?}",
+        error.error.message
+    );
+    assert!(fixture.app.pane_is_dock_slot(0, fixture.dock));
+    assert_focus_off_the_slot(&fixture.app);
+    crate::app::api::test_support::shutdown_test_runtimes(&mut fixture.app);
+}
+
+#[tokio::test]
+async fn dock_sidebar_creates_an_inert_slot() {
+    let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::new(
+        &Config::default(),
+        crate::app::AppPolicy::TEST,
+        None,
+        api_rx,
+        crate::api::EventHub::default(),
+    );
+    app.state.default_shell = crate::app::api::test_support::exiting_test_command().into();
+    app.state.shell_mode = ShellModeConfig::NonLogin;
+    app.state.workspaces = vec![Workspace::test_new("dock-api")];
+    app.state.active = Some(0);
+    app.state.selected = 0;
+    app.state.ensure_test_terminals();
+    let main = app.state.workspaces[0].tabs[0].root_pane;
+    let main_public = app.public_pane_id(0, main).unwrap();
+
+    let response = dispatch(
+        &mut app,
+        "pane.dock_sidebar",
+        json!({"pane_id": main_public, "ratio": 0.25}),
+    );
+    let success: SuccessResponse = serde_json::from_str(&response)
+        .unwrap_or_else(|_| panic!("dock_sidebar should succeed: {response}"));
+    let ResponseResult::PaneInfo { pane } = success.result else {
+        panic!("expected dock pane info");
+    };
+    assert_eq!(
+        pane.label.as_deref(),
+        Some(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL)
+    );
+    assert!(!pane.focused, "the dock is never reported as focused");
+    assert!(pane.agent.is_none(), "the placeholder is not an agent");
+
+    let (dock, focused) = {
+        let tab = &app.state.workspaces[0].tabs[0];
+        let panes = tab.layout.pane_ids();
+        assert_eq!(panes.len(), 2);
+        let dock = *panes
+            .iter()
+            .find(|pane_id| app.pane_is_dock_slot(0, **pane_id))
+            .expect("the docking call created the slot");
+        assert_eq!(panes[0], dock, "the dock is the left-hand slot");
+        (dock, tab.layout.focused())
+    };
+    assert_eq!(focused, main, "docking must not move focus");
+    let ratio = app
+        .session_dock_ratio()
+        .expect("the session now has a dock");
+    assert!((ratio - 0.25).abs() < 0.01, "dock ratio was {ratio}");
+
+    let response = dispatch(&mut app, "layout.export", json!({"pane_id": main_public}));
+    let success: SuccessResponse = serde_json::from_str(&response).expect("layout export");
+    let ResponseResult::LayoutExport { layout } = success.result else {
+        panic!("expected layout export");
+    };
+    assert_eq!(
+        dock_labelled_pane(&layout.root),
+        Some(pane.pane_id.clone()),
+        "the exported layout reports exactly the docked slot"
+    );
+
+    let terminal_id = app.state.workspaces[0].tabs[0]
+        .terminal_id(dock)
+        .cloned()
+        .expect("dock terminal");
+    let terminal = app
+        .state
+        .terminals
+        .get(&terminal_id)
+        .expect("dock terminal state");
+    assert_eq!(
+        terminal.launch_argv,
+        Some(crate::app::dock_slot_argv()),
+        "the slot runs the inert placeholder, never a shell"
+    );
+    assert!(
+        terminal.detected_agent.is_none(),
+        "the slot is invisible to agent detection"
+    );
+
+    // The tab no longer holds a single user pane, so a second dock is refused.
+    let response = dispatch(
+        &mut app,
+        "pane.dock_sidebar",
+        json!({"pane_id": main_public, "ratio": 0.2}),
+    );
+    let error: ErrorResponse = serde_json::from_str(&response).expect("second dock should fail");
+    assert_eq!(error.error.code, "pane_dock_sidebar_failed");
+    assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_ids().len(), 2);
+
+    // A dock created here composes like any other: new tabs inherit the slot.
+    let response = dispatch(&mut app, "tab.create", json!({"focus": false}));
+    let success: SuccessResponse = serde_json::from_str(&response).expect("tab create");
+    assert!(matches!(success.result, ResponseResult::TabCreated { .. }));
+    let new_tab = &app.state.workspaces[0].tabs[1];
+    let inherited_docks = new_tab
+        .layout
+        .pane_ids()
+        .into_iter()
+        .filter(|pane_id| app.pane_is_dock_slot(0, *pane_id))
+        .count();
+    assert_eq!(inherited_docks, 1, "a new tab inherits the dock slot");
+    assert!(
+        !app.pane_is_dock_slot(0, new_tab.layout.focused()),
+        "the inherited slot must not take focus"
+    );
+
+    crate::app::api::test_support::shutdown_test_runtimes(&mut app);
 }
 
 #[tokio::test]

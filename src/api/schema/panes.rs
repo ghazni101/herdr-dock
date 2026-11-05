@@ -357,6 +357,19 @@ crate::cli::projection::cli_params! {
 }
 
 crate::cli::projection::cli_params! {
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+    pub struct PaneDockSidebarParams => PaneDockSidebarProjection {
+        /// Pane the docked sidebar slot is created beside. Its tab must hold
+        /// exactly that one pane.
+        pub pane_id: String => Field::new(String::new()).input(binding::pane_id()),
+        /// Width share of the new slot, from 0.0 to 1.0 exclusive. Defaults to
+        /// the width the session's existing dock already uses.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub ratio: Option<f32> => Field::new(None).input(binding::finite("ratio")),
+    }
+}
+
+crate::cli::projection::cli_params! {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
     pub struct PaneSendTextParams => PaneSendTextProjection {
         pub pane_id: String => Field::new(String::new()).input(binding::pane_id()),

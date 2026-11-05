@@ -595,6 +595,14 @@ pub(super) const LEAVES: &[Leaf] = &[
         PaneRenameProjection,
         PaneRename
     ),
+    leaf!(
+        "dock-sidebar",
+        "Create the docked sidebar slot beside a pane",
+        "cli:pane:dock_sidebar",
+        Json,
+        PaneDockSidebarProjection,
+        PaneDockSidebar
+    ),
     Leaf {
         name: "input",
         about: "Set pane input routing",

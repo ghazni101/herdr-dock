@@ -154,7 +154,7 @@ impl App {
         found.then(|| self.default_dock_ratio())
     }
 
-    fn default_dock_ratio(&self) -> f32 {
+    pub(super) fn default_dock_ratio(&self) -> f32 {
         let width = f32::from(self.state.new_pane_area().width.max(1));
         (DEFAULT_DOCK_COLUMNS / width).clamp(0.12, 0.5)
     }
