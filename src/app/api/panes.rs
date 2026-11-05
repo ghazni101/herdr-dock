@@ -4218,10 +4218,10 @@ mod tests {
         assert!(!app.state.terminals.contains_key(&dock_terminal));
     }
 
-    /// The monitor-strip layout: a full-width strip above a docked sidebar and
-    /// the user's main pane. The dock is wide enough to win the geometric
-    /// neighbour tie against main, which is exactly when navigation used to
-    /// land on the chrome slot.
+    /// The monitor-strip layout: a strip and a second pane above a docked
+    /// sidebar and the user's main pane. The dock is wide enough to win the
+    /// geometric neighbour tie against main, which is exactly when navigation
+    /// used to land on the chrome slot.
     fn strip_docked_tab(app: &mut App) -> (PaneId, PaneId, PaneId, PaneId) {
         let main = app.state.workspaces[0].tabs[0].root_pane;
         app.state.workspaces[0].tabs[0].layout.focus_pane(main);
@@ -4264,6 +4264,8 @@ mod tests {
         let (strip, _right, dock, main) = strip_docked_tab(&mut app);
         compute_test_view(&mut app);
         let strip_public = app.public_pane_id(0, strip).unwrap();
+        let main_public = app.public_pane_id(0, main).unwrap();
+        let dock_public = app.public_pane_id(0, dock).unwrap();
 
         let response = app.handle_pane_focus_direction(
             "req".into(),
@@ -4277,15 +4279,74 @@ mod tests {
         let ResponseResult::PaneFocusDirection { focus } = success.result else {
             panic!("expected pane focus direction response");
         };
+        assert!(focus.changed, "focus must step over the dock slot");
         assert_eq!(
             app.state.workspaces[0].tabs[0].layout.focused(),
             main,
             "focus must step over the dock slot"
         );
-        assert_eq!(focus.focused_pane_id, app.public_pane_id(0, main));
-        assert_ne!(focus.focused_pane_id, app.public_pane_id(0, dock));
+        assert_eq!(focus.focused_pane_id, main_public);
+        assert_ne!(focus.focused_pane_id, dock_public);
+
+        let response = app.handle_pane_focus_direction(
+            "req".into(),
+            PaneFocusDirectionParams {
+                pane_id: Some(main_public.clone()),
+                direction: PaneDirection::Left,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneFocusDirection { focus } = success.result else {
+            panic!("expected pane focus direction response");
+        };
+        assert!(!focus.changed, "the dock slot is not a navigation target");
+        assert_eq!(focus.reason, Some(PaneFocusDirectionReason::NoNeighbor));
+        assert_eq!(focus.focused_pane_id, main_public);
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.focused(), main);
     }
 
+    /// `handle_pane_neighbor` shares `directional_pane_target` with focus, so it
+    /// is the discriminating path for moving the dock filter into the helper.
+    #[test]
+    fn pane_neighbor_skips_the_dock_slot() {
+        let (mut app, _public_pane_id) = app_with_test_workspace();
+        let (strip, _right, dock, main) = strip_docked_tab(&mut app);
+        compute_test_view(&mut app);
+        let strip_public = app.public_pane_id(0, strip).unwrap();
+        let main_public = app.public_pane_id(0, main).unwrap();
+        let dock_public = app.public_pane_id(0, dock).unwrap();
+
+        let response = app.handle_pane_neighbor(
+            "req".into(),
+            PaneNeighborParams {
+                pane_id: Some(strip_public),
+                direction: PaneDirection::Down,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneNeighbor { neighbor } = success.result else {
+            panic!("expected pane neighbor response");
+        };
+        assert_eq!(neighbor.neighbor_pane_id, Some(main_public.clone()));
+        assert_ne!(neighbor.neighbor_pane_id, Some(dock_public));
+
+        let response = app.handle_pane_neighbor(
+            "req".into(),
+            PaneNeighborParams {
+                pane_id: Some(main_public),
+                direction: PaneDirection::Left,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneNeighbor { neighbor } = success.result else {
+            panic!("expected pane neighbor response");
+        };
+        assert_eq!(neighbor.neighbor_pane_id, None);
+    }
+
+    /// Characterization: `handle_pane_swap` filtered the dock before the helper
+    /// did, so direction swaps already stepped over it.
     #[test]
     fn pane_swap_direction_skips_the_dock_slot() {
         let (mut app, _public_pane_id) = app_with_test_workspace();

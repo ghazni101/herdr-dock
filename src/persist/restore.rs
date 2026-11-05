@@ -2190,12 +2190,9 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn restore_keeps_the_dock_slot_on_the_placeholder() {
+    fn dock_slot_session_snapshot(dock_launch_argv: Option<Vec<String>>) -> SessionSnapshot {
         let cwd = std::env::current_dir().unwrap();
-        let pane_snapshot = |label: Option<&str>,
-                             launch_argv: Option<Vec<String>>|
-         -> super::super::snapshot::PaneSnapshot {
+        let pane_snapshot = |label: Option<&str>, launch_argv: Option<Vec<String>>| {
             super::super::snapshot::PaneSnapshot {
                 cwd: cwd.clone(),
                 label: label.map(str::to_string),
@@ -2206,7 +2203,7 @@ mod tests {
                 launch_argv,
             }
         };
-        let snapshot = SessionSnapshot {
+        SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             workspaces: vec![WorkspaceSnapshot {
                 id: Some("w1".into()),
@@ -2231,7 +2228,7 @@ mod tests {
                             1,
                             pane_snapshot(
                                 Some(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL),
-                                Some(crate::app::dock_slot_argv()),
+                                dock_launch_argv,
                             ),
                         ),
                     ]),
@@ -2247,7 +2244,12 @@ mod tests {
             sidebar_width: None,
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
-        };
+        }
+    }
+
+    #[tokio::test]
+    async fn restore_keeps_the_dock_slot_on_the_placeholder() {
+        let snapshot = dock_slot_session_snapshot(Some(crate::app::dock_slot_argv()));
         let (events, _event_rx) = mpsc::channel(8);
 
         let (workspaces, terminals, runtimes) = restore(
@@ -2302,6 +2304,103 @@ mod tests {
         for (_, runtime) in runtimes {
             runtime.shutdown();
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn restore_handoff_keeps_the_dock_slot_on_the_placeholder() {
+        let snapshot = dock_slot_session_snapshot(Some(crate::app::dock_slot_argv()));
+        let (events, _event_rx) = mpsc::channel(8);
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let dock_terminal_id = terminals
+            .values()
+            .find(|terminal| {
+                terminal.manual_label.as_deref()
+                    == Some(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL)
+            })
+            .expect("dock slot terminal should restore")
+            .id
+            .clone();
+        let tab = &workspaces[0].tabs[0];
+        let dock_pane_id = tab
+            .layout
+            .pane_ids()
+            .into_iter()
+            .find(|pane_id| tab.terminal_id(*pane_id) == Some(&dock_terminal_id))
+            .expect("dock pane should be laid out");
+
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+        let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let runtime = runtimes
+            .get(&dock_terminal_id)
+            .expect("dock runtime should exist");
+        runtime
+            .pause_handoff_reader(std::time::Duration::from_secs(2))
+            .unwrap();
+        let state = runtime.handoff_runtime_state(dock_pane_id.raw());
+        let state = serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+        let mut imports = HashMap::from([(
+            dock_pane_id.raw(),
+            crate::handoff_runtime::ImportedHandoffRuntime {
+                master_fd: runtime.duplicate_handoff_fd().unwrap(),
+                state,
+            },
+        )]);
+        let (events, _event_rx) = mpsc::channel(8);
+        let (restored_workspaces, restored_terminals, restored_runtimes) = restore_handoff(
+            &captured,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            &mut imports,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        )
+        .unwrap();
+
+        let dock = restored_terminals
+            .values()
+            .find(|terminal| {
+                terminal.manual_label.as_deref()
+                    == Some(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL)
+            })
+            .expect("imported dock slot terminal should restore");
+        assert_eq!(
+            dock.launch_argv,
+            Some(crate::app::dock_slot_argv()),
+            "the imported dock slot must keep its placeholder command"
+        );
+        assert!(
+            !dock.respawn_shell_on_exit,
+            "the imported dock slot must not respawn a shell after its placeholder exits"
+        );
+        let main = restored_terminals
+            .values()
+            .find(|terminal| terminal.manual_label.is_none())
+            .expect("main pane terminal should restore");
+        let tab = &restored_workspaces[0].tabs[0];
+        assert_eq!(
+            tab.terminal_id(tab.layout.focused()),
+            Some(&main.id),
+            "restore must not focus the dock slot"
+        );
+        for (_, runtime) in restored_runtimes {
+            runtime.shutdown();
+        }
+        drop(runtimes);
     }
 
     fn snapshot_with_saved_pane_history() -> (SessionSnapshot, SessionHistorySnapshot) {

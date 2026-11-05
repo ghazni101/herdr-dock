@@ -197,8 +197,9 @@ fn surface_at(
     pane
 }
 
-/// The dock can win the geometric neighbour tie against main, so the client
-/// must leave dock skipping to the server instead of refusing the move.
+/// Characterization: the removed client-side dock guard never refused
+/// vertical moves. The regression coverage for delegating dock skipping to the
+/// server is `focus_toward_the_dock_is_delegated_to_the_server`.
 #[test]
 fn pane_navigation_steps_past_the_dock_slot() {
     let mut snapshot = snapshot();
@@ -255,6 +256,9 @@ fn pane_navigation_steps_past_the_dock_slot() {
     );
 }
 
+/// Regression: the removed client-side guard refused a Left move whose nearest
+/// pane was the dock. The server now owns dock skipping, so the client must
+/// delegate the move.
 #[test]
 fn focus_toward_the_dock_is_delegated_to_the_server() {
     let mut snapshot = dock_snapshot();
