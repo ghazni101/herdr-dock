@@ -89,6 +89,43 @@ impl App {
             .collect()
     }
 
+    /// Keep server focus on a user pane in every tab that still has one.
+    ///
+    /// The docked sidebar is client chrome, so focus must never rest on its
+    /// slot: a third-party API client would read `focused: true` for chrome the
+    /// user cannot type into, and the client fallback would have to mask it.
+    /// Tabs that contain only slots keep their focus, so a tab never loses
+    /// focus entirely. Focus moves without recording history, so closing the
+    /// pane that had focus cannot return to the slot.
+    pub(super) fn normalize_slot_focus(&mut self) -> bool {
+        let mut changed = false;
+        for ws_idx in 0..self.state.workspaces.len() {
+            let tab_count = self.state.workspaces[ws_idx].tabs.len();
+            for tab_idx in 0..tab_count {
+                let focused = self.state.workspaces[ws_idx].tabs[tab_idx].layout.focused();
+                if !self.state.pane_is_dock_slot(ws_idx, focused) {
+                    continue;
+                }
+                let Some(target) = self.primary_pane_in_tab(ws_idx, tab_idx) else {
+                    continue;
+                };
+                if let Some(tab) = self
+                    .state
+                    .workspaces
+                    .get_mut(ws_idx)
+                    .and_then(|ws| ws.tabs.get_mut(tab_idx))
+                {
+                    tab.layout.focus_pane_without_history(target);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.state.mark_session_dirty();
+        }
+        changed
+    }
+
     /// Split ratio for a new dock, or None when the session has no dock yet.
     /// Inherits the width share of an existing left-hand dock, preferring the
     /// active space, so new tabs match the dock the user already sized.
@@ -375,6 +412,74 @@ mod tests {
             Some(root_pane.pane_id)
         );
         ws_idx
+    }
+
+    /// A read-only request: it must not touch focus or dirty the session.
+    fn read_only_request(app: &mut App) -> String {
+        app.handle_api_request(Request {
+            id: "read".into(),
+            method: Method::PaneList(crate::api::schema::PaneListParams::default()),
+        })
+    }
+
+    #[test]
+    fn explicit_focus_refuses_the_dock_slot() {
+        let mut app = app();
+        let main = app.state.workspaces[0].tabs[0].root_pane;
+        let dock = dock_first_space(&mut app, 0.2);
+
+        assert!(!app.state.focus_pane_in_workspace(0, dock));
+
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.focused(), main);
+    }
+
+    #[test]
+    fn api_dispatch_normalizes_focus_left_on_a_slot() {
+        let mut app = app();
+        let main = app.state.workspaces[0].tabs[0].root_pane;
+        let dock = dock_first_space(&mut app, 0.2);
+        app.state.workspaces[0].tabs[0].layout.focus_pane(dock);
+        app.state.session_dirty = false;
+
+        let response = read_only_request(&mut app);
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(success.result, ResponseResult::PaneList { .. }));
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.focused(), main);
+        assert!(app.state.session_dirty, "a focus correction must persist");
+    }
+
+    #[test]
+    fn a_slot_only_tab_keeps_its_focus() {
+        let mut app = app();
+        let only = app.state.workspaces[0].tabs[0].root_pane;
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.workspaces[0].tabs[0]
+            .terminal_id(only)
+            .cloned()
+            .unwrap();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_manual_label(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL.into());
+        app.state.session_dirty = false;
+
+        read_only_request(&mut app);
+
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.focused(), only);
+        assert!(!app.state.session_dirty);
+    }
+
+    #[test]
+    fn api_dispatch_does_not_dirty_a_docked_session_without_a_focus_change() {
+        let mut app = app();
+        dock_first_space(&mut app, 0.2);
+        app.state.session_dirty = false;
+
+        read_only_request(&mut app);
+
+        assert!(!app.state.session_dirty);
     }
 
     #[tokio::test]

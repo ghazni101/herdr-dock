@@ -224,6 +224,11 @@ impl AppState {
     }
 
     pub(crate) fn focus_pane_in_workspace(&mut self, ws_idx: usize, pane_id: PaneId) -> bool {
+        // Server focus never rests on the docked sidebar slot, whichever
+        // plugin, agent, or API path asks for it.
+        if self.pane_is_dock_slot(ws_idx, pane_id) {
+            return false;
+        }
         let Some(ws) = self.workspaces.get(ws_idx) else {
             return false;
         };
