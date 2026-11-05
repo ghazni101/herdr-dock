@@ -205,8 +205,10 @@ impl Tab {
         self.custom_name = Some(name);
     }
 
-    pub fn split_focused_command(
+    #[allow(clippy::too_many_arguments)]
+    pub fn split_pane_command(
         &mut self,
+        target: PaneId,
         direction: Direction,
         rows: u16,
         cols: u16,
@@ -218,7 +220,7 @@ impl Tab {
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
     ) -> std::io::Result<NewPane> {
         self.split_pane_with_runtime(
-            self.layout.focused(),
+            target,
             true,
             direction,
             None,

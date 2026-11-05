@@ -1425,6 +1425,30 @@ pub(super) mod test_support {
             runtime.shutdown();
         }
     }
+
+    pub(crate) fn dock_tab(
+        app: &mut crate::app::App,
+        ws_idx: usize,
+        tab_idx: usize,
+    ) -> crate::layout::PaneId {
+        let previous_tab = app.state.workspaces[ws_idx].active_tab;
+        app.state.workspaces[ws_idx].active_tab = tab_idx;
+        let main = app.state.workspaces[ws_idx].tabs[tab_idx].root_pane;
+        let dock = app.state.workspaces[ws_idx].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        let tab = &mut app.state.workspaces[ws_idx].tabs[tab_idx];
+        tab.layout.set_ratio_at(&[], 0.2);
+        tab.layout.swap_panes(main, dock);
+        tab.layout.focus_pane(main);
+        let terminal_id = tab.terminal_id(dock).cloned().unwrap();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_manual_label(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL.into());
+        app.state.workspaces[ws_idx].active_tab = previous_tab;
+        dock
+    }
 }
 
 #[cfg(test)]

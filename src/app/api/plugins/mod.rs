@@ -1635,6 +1635,109 @@ platforms = ["linux", "macos"]
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
+    fn dock_split_manifest(root: &std::path::Path) -> std::path::PathBuf {
+        write_manifest_content(
+            root,
+            r#"
+id = "example.dock-split"
+name = "Dock Split"
+version = "0.1.0"
+min_herdr_version = "0.6.10"
+platforms = ["linux", "macos"]
+
+[[panes]]
+id = "board"
+title = "Board"
+placement = "split"
+command = ["sh", "-c", "sleep 1"]
+"#,
+        )
+    }
+
+    #[cfg(unix)]
+    fn docked_test_app(name: &str) -> (App, crate::layout::PaneId) {
+        let mut app = test_app();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new(name)];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let dock = crate::app::api::test_support::dock_tab(&mut app, 0, 0);
+        (app, dock)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plugin_pane_open_split_rejects_the_dock_slot_as_target() {
+        let (mut app, dock) = docked_test_app("plugin-dock-reject");
+        let dock_public = app.public_pane_id(0, dock).unwrap();
+        let root = unique_temp_path("plugin-pane-dock-reject");
+        dock_split_manifest(&root);
+        link_manifest(&mut app, &root);
+        let before = app.state.workspaces[0].tabs[0].layout.pane_ids();
+
+        let response = app.handle_api_request(Request {
+            id: "pane-open-dock-reject".into(),
+            method: Method::PluginPaneOpen(PluginPaneOpenParams {
+                plugin_id: "example.dock-split".into(),
+                entrypoint: "board".into(),
+                placement: Some(PluginPanePlacement::Split),
+                width: None,
+                height: None,
+                workspace_id: None,
+                target_pane_id: Some(dock_public),
+                direction: None,
+                cwd: None,
+                focus: false,
+                env: std::collections::HashMap::new(),
+            }),
+        });
+
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(value["error"]["code"], "plugin_pane_open_failed");
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_ids(), before);
+        assert!(app.overlay_panes.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn plugin_pane_open_split_targets_the_user_pane_when_dock_has_focus() {
+        let (mut app, dock) = docked_test_app("plugin-dock-focus");
+        app.state.workspaces[0].tabs[0].layout.focus_pane(dock);
+        let ratio_before = app.session_dock_ratio();
+        let root = unique_temp_path("plugin-pane-dock-focus");
+        dock_split_manifest(&root);
+        link_manifest(&mut app, &root);
+
+        let response = app.handle_api_request(Request {
+            id: "pane-open-dock-focus".into(),
+            method: Method::PluginPaneOpen(PluginPaneOpenParams {
+                plugin_id: "example.dock-split".into(),
+                entrypoint: "board".into(),
+                placement: Some(PluginPanePlacement::Split),
+                width: None,
+                height: None,
+                workspace_id: None,
+                target_pane_id: None,
+                direction: None,
+                cwd: None,
+                focus: false,
+                env: std::collections::HashMap::new(),
+            }),
+        });
+
+        let ResponseResult::PluginPaneOpened { plugin_pane } = response_result(&response) else {
+            panic!("expected plugin pane opened response: {response}");
+        };
+        let new_pane = app.parse_pane_id(&plugin_pane.pane.pane_id).unwrap().1;
+        assert_ne!(new_pane, dock);
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_ids().len(), 3);
+        assert_eq!(app.session_dock_ratio(), ratio_before);
+        crate::app::api::test_support::shutdown_test_runtimes(&mut app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[cfg(windows)]
     #[tokio::test]
     async fn windows_plugin_pane_commands_resolve_from_plugin_root_with_cwd_override() {

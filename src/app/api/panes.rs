@@ -37,17 +37,26 @@ impl App {
         } else if let Some(workspace_id) = params.workspace_id.as_deref() {
             self.parse_workspace_id(workspace_id).and_then(|ws_idx| {
                 let pane_id = self.state.workspaces.get(ws_idx)?.focused_pane_id()?;
+                let pane_id = self.implicit_operation_pane(ws_idx, pane_id)?;
                 Some((ws_idx, pane_id))
             })
         } else {
             self.state.active.and_then(|ws_idx| {
                 let pane_id = self.state.workspaces.get(ws_idx)?.focused_pane_id()?;
+                let pane_id = self.implicit_operation_pane(ws_idx, pane_id)?;
                 Some((ws_idx, pane_id))
             })
         };
         let Some((ws_idx, target_pane_id)) = target else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
+        if self.pane_is_dock_slot(ws_idx, target_pane_id) {
+            return encode_error(
+                id,
+                "pane_split_failed",
+                "the docked sidebar slot is client chrome and cannot be split",
+            );
+        }
         let extra_env = match super::env::normalize_launch_env(params.env) {
             Ok(env) => env,
             Err((code, message)) => return encode_error(id, &code, message),
@@ -220,6 +229,13 @@ impl App {
                 .get(ws_idx)
                 .and_then(crate::workspace::Workspace::focused_pane_id)
                 == Some(pane_id);
+        if self.pane_is_dock_slot(ws_idx, pane_id) {
+            return encode_error(
+                id,
+                "scrollback_editor_failed",
+                "the docked sidebar slot is client chrome and cannot be edited",
+            );
+        }
         if !is_focused {
             return encode_error(id, "stale_pane_target", "pane is no longer focused");
         }
@@ -790,6 +806,13 @@ impl App {
             else {
                 return encode_error(id, "pane_not_found", "source pane not found");
             };
+            if self.pane_is_dock_slot(ws_idx, source_pane_id) {
+                return encode_error(
+                    id,
+                    "invalid_pane_swap",
+                    "the docked sidebar slot is client chrome and cannot be swapped",
+                );
+            }
             let Some(tab_idx) =
                 self.state.workspaces[ws_idx].find_tab_index_for_pane(source_pane_id)
             else {
@@ -800,7 +823,9 @@ impl App {
                         .unwrap_or_default(),
                 );
             };
-            let target = self.directional_pane_target(ws_idx, tab_idx, source_pane_id, direction);
+            let target = self
+                .directional_pane_target(ws_idx, tab_idx, source_pane_id, direction)
+                .filter(|target| !self.pane_is_dock_slot(ws_idx, *target));
             match target {
                 Some(target_pane_id) => {
                     (ws_idx, tab_idx, source_pane_id, Some(target_pane_id), None)
@@ -832,6 +857,16 @@ impl App {
                     let tab_idx = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id)?;
                     Some((ws_idx, tab_idx, pane_id))
                 });
+            if source.is_some_and(|(ws_idx, _, pane_id)| self.pane_is_dock_slot(ws_idx, pane_id))
+                || target
+                    .is_some_and(|(ws_idx, _, pane_id)| self.pane_is_dock_slot(ws_idx, pane_id))
+            {
+                return encode_error(
+                    id,
+                    "invalid_pane_swap",
+                    "the docked sidebar slot is client chrome and cannot be swapped",
+                );
+            }
             let response_context = source
                 .map(|(ws_idx, tab_idx, _)| (ws_idx, tab_idx))
                 .or_else(|| target.map(|(ws_idx, tab_idx, _)| (ws_idx, tab_idx)))
@@ -1100,10 +1135,28 @@ impl App {
                         }
                         pane_id
                     }
-                    None => self.state.workspaces[target_ws_idx].tabs[target_tab_idx]
-                        .layout
-                        .focused(),
+                    None => {
+                        let focused = self.state.workspaces[target_ws_idx].tabs[target_tab_idx]
+                            .layout
+                            .focused();
+                        let Some(pane_id) = self.implicit_operation_pane(target_ws_idx, focused)
+                        else {
+                            return encode_error(
+                                id,
+                                "pane_move_failed",
+                                "target tab has no pane to insert beside",
+                            );
+                        };
+                        pane_id
+                    }
                 };
+                if self.pane_is_dock_slot(target_ws_idx, target_pane_id) {
+                    return encode_error(
+                        id,
+                        "pane_move_failed",
+                        "the docked sidebar slot is client chrome and cannot be a move target",
+                    );
+                }
                 let Some(target_tab_id) = self.public_tab_id(target_ws_idx, target_tab_idx) else {
                     return encode_error(id, "tab_not_found", format!("tab {tab_id} not found"));
                 };
@@ -2152,7 +2205,14 @@ impl App {
     }
 
     fn resolve_swap_source(&self, pane_id: Option<&str>) -> Option<(usize, PaneId)> {
-        self.resolve_optional_pane(pane_id)
+        match pane_id {
+            Some(pane_id) => self.parse_pane_id(pane_id),
+            None => {
+                let (ws_idx, pane_id) = self.resolve_optional_pane(None)?;
+                let pane_id = self.implicit_operation_pane(ws_idx, pane_id)?;
+                Some((ws_idx, pane_id))
+            }
+        }
     }
 
     fn directional_pane_target(
@@ -2825,6 +2885,32 @@ mod tests {
             },
         );
         assert!(response.contains("stale_content"));
+    }
+
+    #[test]
+    fn api_edit_scrollback_rejects_the_dock_slot() {
+        let (mut app, _public_pane_id) = app_with_test_workspace();
+        let dock = dock_first_tab(&mut app);
+        app.state.workspaces[0].tabs[0].layout.focus_pane(dock);
+        let dock_public = app.public_pane_id(0, dock).unwrap();
+        let before = app.state.workspaces[0].tabs[0].layout.pane_ids();
+
+        let response = app.handle_pane_edit_scrollback(
+            "req".into(),
+            PaneTarget {
+                pane_id: dock_public,
+            },
+        );
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "scrollback_editor_failed");
+        assert!(
+            error.error.message.contains("sidebar"),
+            "rejection should name the sidebar slot, got {message:?}",
+            message = error.error.message
+        );
+        assert!(app.overlay_panes.is_empty());
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_ids(), before);
     }
 
     #[tokio::test]
@@ -3660,20 +3746,7 @@ mod tests {
     }
 
     fn dock_first_tab(app: &mut App) -> PaneId {
-        let main = app.state.workspaces[0].tabs[0].root_pane;
-        let dock = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
-        app.state.ensure_test_terminals();
-        let tab = &mut app.state.workspaces[0].tabs[0];
-        tab.layout.set_ratio_at(&[], 0.2);
-        tab.layout.swap_panes(main, dock);
-        tab.layout.focus_pane(main);
-        let terminal_id = tab.terminal_id(dock).cloned().unwrap();
-        app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .unwrap()
-            .set_manual_label(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL.into());
-        dock
+        crate::app::api::test_support::dock_tab(app, 0, 0)
     }
 
     fn dock_flags(app: &App, ws_idx: usize, tab_idx: usize) -> Vec<bool> {
@@ -3783,6 +3856,270 @@ mod tests {
         assert_eq!(app.state.workspaces.len(), 1);
         assert_eq!(app.state.workspaces[0].tabs.len(), 1);
         assert_eq!(dock_flags(&app, 0, 0), vec![true, false]);
+    }
+
+    fn split_params(target: Option<String>) -> PaneSplitParams {
+        PaneSplitParams {
+            workspace_id: None,
+            target_pane_id: target,
+            direction: SplitDirection::Right,
+            ratio: None,
+            cwd: None,
+            focus: false,
+            right_click: crate::api::schema::PaneRightClickTarget::Herdr,
+            env: std::collections::HashMap::new(),
+        }
+    }
+
+    fn pane_rect(
+        app: &App,
+        ws_idx: usize,
+        tab_idx: usize,
+        pane_id: PaneId,
+    ) -> ratatui::layout::Rect {
+        app.state.workspaces[ws_idx].tabs[tab_idx]
+            .layout
+            .panes(app.state.view.terminal_area)
+            .into_iter()
+            .find(|pane| pane.id == pane_id)
+            .expect("pane must be laid out")
+            .rect
+    }
+
+    fn compute_test_view(app: &mut App) {
+        crate::ui::compute_view_with_runtime_registry(
+            &mut app.state,
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            ratatui::layout::Rect::new(0, 0, 100, 20),
+        );
+    }
+
+    #[test]
+    fn api_pane_split_rejects_the_dock_slot_as_target() {
+        let (mut app, _public_pane_id) = app_with_test_workspace();
+        let dock = dock_first_tab(&mut app);
+        let dock_public = app.public_pane_id(0, dock).unwrap();
+        let before = app.state.workspaces[0].tabs[0].layout.pane_ids();
+
+        let response = app.handle_pane_split("req".into(), split_params(Some(dock_public)));
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "pane_split_failed");
+        assert!(
+            error.error.message.contains("sidebar"),
+            "rejection should name the sidebar slot, got {message:?}",
+            message = error.error.message
+        );
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_ids(), before);
+    }
+
+    #[test]
+    fn api_pane_move_rejects_the_dock_slot_as_insert_target() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        let target_tab_idx = app.state.workspaces[0].test_add_tab(Some("target"));
+        let dock = crate::app::api::test_support::dock_tab(&mut app, 0, target_tab_idx);
+        let dock_public = app.public_pane_id(0, dock).unwrap();
+        let tab_id = app.public_tab_id(0, target_tab_idx).unwrap();
+        let before = app.state.workspaces[0].tabs[target_tab_idx]
+            .layout
+            .pane_ids();
+
+        let response = app.handle_pane_move(
+            "req".into(),
+            PaneMoveParams {
+                pane_id: public_pane_id,
+                destination: PaneMoveDestination::Tab {
+                    tab_id,
+                    target_pane_id: Some(dock_public),
+                    split: SplitDirection::Right,
+                    ratio: None,
+                },
+                focus: true,
+            },
+        );
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "pane_move_failed");
+        assert!(
+            error.error.message.contains("sidebar"),
+            "rejection should name the sidebar slot, got {message:?}",
+            message = error.error.message
+        );
+        assert_eq!(
+            app.state.workspaces[0].tabs[target_tab_idx]
+                .layout
+                .pane_ids(),
+            before
+        );
+    }
+
+    #[test]
+    fn api_pane_swap_direction_treats_the_dock_neighbor_as_no_neighbor() {
+        let (mut app, _public_pane_id) = app_with_test_workspace();
+        let dock = dock_first_tab(&mut app);
+        let main = app.state.workspaces[0].tabs[0].root_pane;
+        let main_public = app.public_pane_id(0, main).unwrap();
+        let before = app.state.workspaces[0].tabs[0].layout.pane_ids();
+        compute_test_view(&mut app);
+
+        let response = app.handle_pane_swap(
+            "req".into(),
+            PaneSwapParams {
+                pane_id: Some(main_public),
+                direction: Some(PaneDirection::Left),
+                ..PaneSwapParams::default()
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneSwap { swap: swap_result } = success.result else {
+            panic!("expected pane swap response");
+        };
+        assert!(!swap_result.changed);
+        assert_eq!(swap_result.reason, Some(PaneSwapReason::NoNeighbor));
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_ids(), before);
+        assert_ne!(app.state.workspaces[0].tabs[0].layout.focused(), dock);
+    }
+
+    #[test]
+    fn api_pane_swap_direction_retargets_an_unnamed_dock_source() {
+        let (mut app, _public_pane_id) = app_with_test_workspace();
+        let dock = dock_first_tab(&mut app);
+        let main = app.state.workspaces[0].tabs[0].root_pane;
+        let main_public = app.public_pane_id(0, main).unwrap();
+        app.state.active = Some(0);
+        app.state.workspaces[0].tabs[0].layout.focus_pane(dock);
+        let before = app.state.workspaces[0].tabs[0].layout.pane_ids();
+        compute_test_view(&mut app);
+
+        let response = app.handle_pane_swap(
+            "req".into(),
+            PaneSwapParams {
+                pane_id: None,
+                direction: Some(PaneDirection::Left),
+                ..PaneSwapParams::default()
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneSwap { swap: swap_result } = success.result else {
+            panic!("expected pane swap response");
+        };
+        assert_eq!(swap_result.source_pane_id, main_public);
+        assert!(!swap_result.changed);
+        assert_eq!(swap_result.reason, Some(PaneSwapReason::NoNeighbor));
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_ids(), before);
+    }
+
+    #[test]
+    fn api_pane_swap_rejects_the_dock_slot() {
+        let (mut app, _public_pane_id) = app_with_test_workspace();
+        let dock = dock_first_tab(&mut app);
+        let main = app.state.workspaces[0].tabs[0].root_pane;
+        let dock_public = app.public_pane_id(0, dock).unwrap();
+        let main_public = app.public_pane_id(0, main).unwrap();
+        let before = app.state.workspaces[0].tabs[0].layout.pane_ids();
+
+        let response = app.handle_pane_swap(
+            "req".into(),
+            PaneSwapParams {
+                source_pane_id: Some(main_public),
+                target_pane_id: Some(dock_public),
+                ..PaneSwapParams::default()
+            },
+        );
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "invalid_pane_swap");
+        assert!(
+            error.error.message.contains("sidebar"),
+            "rejection should name the sidebar slot, got {message:?}",
+            message = error.error.message
+        );
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_ids(), before);
+    }
+
+    #[tokio::test]
+    async fn api_pane_split_implicit_target_falls_back_from_the_dock_slot() {
+        let (mut app, _public_pane_id) = app_with_test_workspace();
+        app.state.default_shell = crate::app::exiting_test_command().into();
+        app.state.active = Some(0);
+        let dock = dock_first_tab(&mut app);
+        app.state.workspaces[0].tabs[0].layout.focus_pane(dock);
+        compute_test_view(&mut app);
+        let dock_before = pane_rect(&app, 0, 0, dock);
+
+        let response = app.handle_pane_split("req".into(), split_params(None));
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneInfo { pane } = success.result else {
+            panic!("expected pane info response");
+        };
+        let new_pane = app.parse_pane_id(&pane.pane_id).unwrap().1;
+        assert_ne!(new_pane, dock);
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_ids().len(), 3);
+        compute_test_view(&mut app);
+        let dock_after = pane_rect(&app, 0, 0, dock);
+        let new_rect = pane_rect(&app, 0, 0, new_pane);
+        assert_eq!(dock_after, dock_before, "the dock split must not change");
+        assert!(
+            new_rect.x >= dock_after.right(),
+            "the new pane belongs beside the primary pane, not inside the dock column"
+        );
+        crate::app::api::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[test]
+    fn api_pane_move_implicit_target_falls_back_from_the_dock_slot() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        app.state.default_shell = crate::app::exiting_test_command().into();
+        app.state.active = Some(0);
+        app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        let target_tab_idx = app.state.workspaces[0].test_add_tab(Some("target"));
+        let dock = crate::app::api::test_support::dock_tab(&mut app, 0, target_tab_idx);
+        app.state.workspaces[0].active_tab = target_tab_idx;
+        app.state.workspaces[0].tabs[target_tab_idx]
+            .layout
+            .focus_pane(dock);
+        compute_test_view(&mut app);
+        let dock_before = pane_rect(&app, 0, target_tab_idx, dock);
+        let tab_id = app.public_tab_id(0, target_tab_idx).unwrap();
+
+        let response = app.handle_pane_move(
+            "req".into(),
+            PaneMoveParams {
+                pane_id: public_pane_id,
+                destination: PaneMoveDestination::Tab {
+                    tab_id,
+                    target_pane_id: None,
+                    split: SplitDirection::Right,
+                    ratio: None,
+                },
+                focus: false,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneMove { move_result } = success.result else {
+            panic!("expected pane move response");
+        };
+        let moved_pane = app.parse_pane_id(&move_result.pane.pane_id).unwrap().1;
+        assert_eq!(
+            app.state.workspaces[0].tabs[target_tab_idx]
+                .layout
+                .pane_ids()
+                .len(),
+            3
+        );
+        compute_test_view(&mut app);
+        let dock_after = pane_rect(&app, 0, target_tab_idx, dock);
+        let moved_rect = pane_rect(&app, 0, target_tab_idx, moved_pane);
+        assert_eq!(dock_after, dock_before, "the dock split must not change");
+        assert!(
+            moved_rect.x >= dock_after.right(),
+            "the moved pane belongs beside the primary pane, not inside the dock column"
+        );
+        crate::app::api::test_support::shutdown_test_runtimes(&mut app);
     }
 
     #[tokio::test]

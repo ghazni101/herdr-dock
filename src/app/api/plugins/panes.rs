@@ -87,19 +87,41 @@ impl App {
         pane: PluginManifestPane,
         placement: PluginPanePlacement,
     ) -> String {
-        let target_pane_id = params
-            .target_pane_id
-            .clone()
-            .or_else(|| self.current_public_pane_id());
-        let Some(target_pane_id) = target_pane_id else {
-            return encode_error(id, "no_active_pane", "no active pane");
-        };
-        let Some((ws_idx, target_pane)) = self.parse_pane_id(&target_pane_id) else {
-            return encode_error(
-                id,
-                "pane_not_found",
-                format!("pane {target_pane_id} not found"),
-            );
+        let (ws_idx, target_pane) = match params.target_pane_id.as_deref() {
+            Some(target_pane_id) => {
+                let Some((ws_idx, target_pane)) = self.parse_pane_id(target_pane_id) else {
+                    return encode_error(
+                        id,
+                        "pane_not_found",
+                        format!("pane {target_pane_id} not found"),
+                    );
+                };
+                if self.pane_is_dock_slot(ws_idx, target_pane) {
+                    return encode_error(
+                        id,
+                        "plugin_pane_open_failed",
+                        "the docked sidebar slot is client chrome and cannot be split",
+                    );
+                }
+                (ws_idx, target_pane)
+            }
+            None => {
+                let Some(ws_idx) = self.state.active else {
+                    return encode_error(id, "no_active_pane", "no active pane");
+                };
+                let Some(focused) = self
+                    .state
+                    .workspaces
+                    .get(ws_idx)
+                    .and_then(crate::workspace::Workspace::focused_pane_id)
+                else {
+                    return encode_error(id, "no_active_pane", "no active pane");
+                };
+                let Some(target_pane) = self.implicit_operation_pane(ws_idx, focused) else {
+                    return encode_error(id, "no_active_pane", "no active pane");
+                };
+                (ws_idx, target_pane)
+            }
         };
         let context = self.plugin_context_for_pane(ws_idx, target_pane, "plugin-pane");
         let cwd = self.plugin_pane_cwd(plugin, params.cwd);
@@ -151,7 +173,10 @@ impl App {
                 return encode_error(
                     id,
                     "pane_not_found",
-                    format!("pane {target_pane_id} not found"),
+                    format!(
+                        "pane {} not found",
+                        self.public_pane_id(ws_idx, target_pane).unwrap_or_default()
+                    ),
                 )
             }
         };
@@ -346,12 +371,6 @@ impl App {
         override_cwd
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from(&plugin.plugin_root))
-    }
-
-    fn current_public_pane_id(&self) -> Option<String> {
-        let ws_idx = self.state.active?;
-        let pane_id = self.state.workspaces.get(ws_idx)?.focused_pane_id()?;
-        self.public_pane_id(ws_idx, pane_id)
     }
 }
 
