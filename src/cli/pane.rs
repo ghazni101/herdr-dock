@@ -320,6 +320,13 @@ mod tests {
                 json!({"pane_id": "pane"}),
             ),
             (
+                "dock-sidebar",
+                vec!["pane", "--ratio", "0.5"],
+                "cli:pane:dock_sidebar",
+                "pane.dock_sidebar",
+                json!({"pane_id": "pane", "ratio": 0.5}),
+            ),
+            (
                 "input",
                 vec!["pane", "--right-click", "herdr"],
                 "cli:pane:input:set",

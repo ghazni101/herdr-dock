@@ -70,4 +70,9 @@ pub struct ServerCapabilities {
     /// version identity, so update and release-notes comparisons stay exact.
     #[serde(default)]
     pub docked_sidebar: bool,
+    /// Fork capability: this server serves `pane.dock_sidebar`, which creates
+    /// the docked sidebar slot atomically. Clients and plugins use it to
+    /// feature-detect the call before falling back.
+    #[serde(default)]
+    pub dock_sidebar: bool,
 }

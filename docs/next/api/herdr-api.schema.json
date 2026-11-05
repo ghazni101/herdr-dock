@@ -2570,6 +2570,26 @@
           ],
           "type": "string"
         },
+        "PaneDockSidebarParams": {
+          "properties": {
+            "pane_id": {
+              "description": "Pane the docked sidebar slot is created beside. Its tab must hold\nexactly that one pane.",
+              "type": "string"
+            },
+            "ratio": {
+              "description": "Width share of the new slot, from 0.0 to 1.0 exclusive. Defaults to\nthe width the session's existing dock already uses.",
+              "format": "float",
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
+        },
         "PaneEdgesParams": {
           "properties": {
             "pane_id": {
@@ -6305,6 +6325,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PluginPaneCloseParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.dock_sidebar",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneDockSidebarParams"
             }
           },
           "required": [
@@ -10422,6 +10458,11 @@
           "properties": {
             "detached_server_daemon": {
               "default": false,
+              "type": "boolean"
+            },
+            "dock_sidebar": {
+              "default": false,
+              "description": "Fork capability: this server serves `pane.dock_sidebar`, which creates\nthe docked sidebar slot atomically. Clients and plugins use it to\nfeature-detect the call before falling back.",
               "type": "boolean"
             },
             "docked_sidebar": {

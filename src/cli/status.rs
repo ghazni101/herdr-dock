@@ -282,6 +282,7 @@ struct ServerCapabilitiesJson {
     health_check: bool,
     ssh_agent_registration: bool,
     docked_sidebar: bool,
+    dock_sidebar: bool,
 }
 
 #[derive(Serialize)]
@@ -329,6 +330,7 @@ fn server_status_json(server: &ServerRuntimeStatus) -> ServerStatusJson {
                     health_check: capabilities.health_check,
                     ssh_agent_registration: capabilities.ssh_agent_registration,
                     docked_sidebar: capabilities.docked_sidebar,
+                    dock_sidebar: capabilities.dock_sidebar,
                 }),
             compatible: protocol.map(|value| value == crate::protocol::PROTOCOL_VERSION),
             endpoint_compatible: capabilities.as_ref().and_then(|capabilities| {
@@ -428,6 +430,7 @@ mod tests {
                 health_check: true,
                 ssh_agent_registration: false,
                 docked_sidebar: false,
+                dock_sidebar: false,
             }),
         }
     }

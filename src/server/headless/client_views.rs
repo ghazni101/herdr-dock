@@ -229,6 +229,7 @@ impl HeadlessServer {
             method,
             Method::CommandInvoke(_)
                 | Method::PaneClose(_)
+                | Method::PaneDockSidebar(_)
                 | Method::PaneEditScrollback(_)
                 | Method::PaneMove(_)
                 | Method::PaneSplit(_)
@@ -292,6 +293,7 @@ impl HeadlessServer {
                 | Method::CommandInvoke(_)
                 | Method::LayoutSetSplitRatio(_)
                 | Method::PaneClose(_)
+                | Method::PaneDockSidebar(_)
                 | Method::PaneEditScrollback(_)
                 | Method::PaneFocus(_)
                 | Method::PaneFocusDirection(_)

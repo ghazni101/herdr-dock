@@ -149,7 +149,10 @@ impl App {
         if let Some(label) = replacement_label {
             self.state.workspaces[ws_idx].tabs[new_tab_idx].set_custom_name(label);
         }
-        self.apply_layout_pane_label(ws_idx, new_root_pane, root_leaf);
+        if let Err(message) = self.apply_layout_pane_label(ws_idx, new_root_pane, root_leaf) {
+            self.rollback_layout_tab(ws_idx, new_root_pane);
+            return encode_error(id, "layout_apply_failed", message);
+        }
 
         if let Err(message) =
             self.apply_layout_node_to_pane(ws_idx, new_root_pane, &params.root, &pane_sizes)
@@ -378,7 +381,7 @@ impl App {
     ) -> Result<(), String> {
         match node {
             LayoutNode::Pane { pane } => {
-                self.apply_layout_pane_label(ws_idx, pane_id, pane);
+                self.apply_layout_pane_label(ws_idx, pane_id, pane)?;
                 Ok(())
             }
             LayoutNode::Split {
@@ -469,7 +472,7 @@ impl App {
             .map_err(|err| err.to_string())?;
         let new_pane_id = new_pane.pane_id;
         self.attach_new_layout_pane(new_pane);
-        self.apply_layout_pane_label(ws_idx, new_pane_id, pane);
+        self.apply_layout_pane_label(ws_idx, new_pane_id, pane)?;
         Ok(new_pane_id)
     }
 
@@ -483,15 +486,25 @@ impl App {
             .insert(new_pane.terminal.id.clone(), new_pane.terminal);
     }
 
-    fn apply_layout_pane_label(&mut self, ws_idx: usize, pane_id: PaneId, pane: &LayoutPane) {
+    fn apply_layout_pane_label(
+        &mut self,
+        ws_idx: usize,
+        pane_id: PaneId,
+        pane: &LayoutPane,
+    ) -> Result<(), String> {
         let Some(label) = pane
             .label
             .as_ref()
             .map(|label| label.trim())
             .filter(|label| !label.is_empty())
         else {
-            return;
+            return Ok(());
         };
+        // The dock label is pane identity, not presentation: writing it here
+        // would hide a live pane behind the sidebar with no rename path out.
+        if label == crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL {
+            return Err(reserved_dock_label_message().into());
+        }
         let Some(terminal_id) = self
             .state
             .workspaces
@@ -499,11 +512,12 @@ impl App {
             .and_then(|ws| ws.terminal_id(pane_id))
             .cloned()
         else {
-            return;
+            return Ok(());
         };
         if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
             terminal.set_manual_label(label.to_string());
         }
+        Ok(())
     }
 
     fn rollback_layout_tab(&mut self, ws_idx: usize, root_pane: PaneId) {
@@ -586,6 +600,13 @@ fn layout_command(pane: &LayoutPane) -> Result<Option<Vec<String>>, String> {
     }
 }
 
+/// A layout cannot hand a live pane the dock identity: that pane would become
+/// client chrome, and `pane.rename` refuses the label in both directions, so
+/// only the docking call can create a dock and only closing can remove one.
+fn reserved_dock_label_message() -> &'static str {
+    "the docked sidebar label is reserved: use pane.dock_sidebar to dock a pane and pane.close to undock it"
+}
+
 fn validate_layout_tree(root: &LayoutNode) -> Result<(), String> {
     let mut stats = LayoutTreeStats {
         panes: 0,
@@ -629,6 +650,11 @@ fn validate_layout_node(
             stats.panes += 1;
             if stats.panes > MAX_LAYOUT_PANES {
                 return Err(format!("layout has more than {} panes", MAX_LAYOUT_PANES));
+            }
+            if pane.label.as_deref().map(str::trim)
+                == Some(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL)
+            {
+                return Err(reserved_dock_label_message().into());
             }
             layout_command(pane)?;
             super::env::normalize_launch_env(pane.env.clone())

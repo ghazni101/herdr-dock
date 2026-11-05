@@ -76,6 +76,7 @@ fn default_capabilities() -> Option<ServerCapabilities> {
         health_check: true,
         ssh_agent_registration: false,
         docked_sidebar: true,
+        dock_sidebar: true,
     })
 }
 
@@ -1399,6 +1400,7 @@ mod tests {
                 health_check: true,
                 ssh_agent_registration: false,
                 docked_sidebar: false,
+                dock_sidebar: false,
             }),
             None,
             None,

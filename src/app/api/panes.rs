@@ -3,11 +3,11 @@ use bytes::Bytes;
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, PaneClearAgentAuthorityParams, PaneCopyMotion,
     PaneCopyMotionParams, PaneCopySearchDirection, PaneCopySearchParams, PaneCurrentParams,
-    PaneDirection, PaneEdgesParams, PaneEdgesResult, PaneFocusDirectionParams,
-    PaneFocusDirectionReason, PaneFocusDirectionResult, PaneInfo, PaneInputSetParams,
-    PaneLayoutPane, PaneLayoutParams, PaneLayoutRect, PaneLayoutSnapshot, PaneLayoutSplit,
-    PaneListParams, PaneMoveDestination, PaneMoveParams, PaneMoveReason, PaneMoveResult,
-    PaneNeighborParams, PaneNeighborResult, PaneProcessInfo, PaneProcessInfoParams,
+    PaneDirection, PaneDockSidebarParams, PaneEdgesParams, PaneEdgesResult,
+    PaneFocusDirectionParams, PaneFocusDirectionReason, PaneFocusDirectionResult, PaneInfo,
+    PaneInputSetParams, PaneLayoutPane, PaneLayoutParams, PaneLayoutRect, PaneLayoutSnapshot,
+    PaneLayoutSplit, PaneListParams, PaneMoveDestination, PaneMoveParams, PaneMoveReason,
+    PaneMoveResult, PaneNeighborParams, PaneNeighborResult, PaneProcessInfo, PaneProcessInfoParams,
     PaneProcessInfoProcess, PaneReadParams, PaneReadResult, PaneReleaseAgentParams,
     PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
     PaneReportMetadataParams, PaneResizeParams, PaneResizeReason, PaneResizeResult,
@@ -1590,6 +1590,26 @@ impl App {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
+        // The docked sidebar is client chrome with a fixed identity: renaming it
+        // away would turn it into an ordinary, focusable pane, so closing the
+        // pane is the only undock path.
+        if self.pane_is_dock_slot(ws_idx, pane_id) {
+            return encode_error(
+                id,
+                "pane_rename_failed",
+                "the docked sidebar slot is client chrome and cannot be renamed; close the pane to undock it",
+            );
+        }
+        let label = params.label.map(|label| label.trim().to_string());
+        // Writing the dock label would hide a live pane behind the sidebar, and
+        // the pane would then have no rename path out.
+        if label.as_deref() == Some(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL) {
+            return encode_error(
+                id,
+                "pane_rename_failed",
+                "the docked sidebar label is reserved: use pane.dock_sidebar to dock a pane and pane.close to undock it",
+            );
+        }
         let Some(terminal_id) = self
             .state
             .workspaces
@@ -1602,12 +1622,77 @@ impl App {
         let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
             return pane_not_found(id, &params.pane_id);
         };
-        match params.label.map(|label| label.trim().to_string()) {
+        match label {
             Some(label) if !label.is_empty() => terminal.set_manual_label(label),
             _ => terminal.clear_manual_label(),
         }
         self.state.mark_session_dirty();
         let pane = self.pane_info(ws_idx, pane_id).unwrap();
+
+        encode_success(id, ResponseResult::PaneInfo { pane })
+    }
+
+    /// Create the docked sidebar slot through the same path new spaces and tabs
+    /// use, so a dock is born inert: placeholder argv, no shell or rc files, no
+    /// agent detection, and no focus. The dock label is fixed here, which is why
+    /// `pane.rename` refuses it in both directions.
+    pub(super) fn handle_pane_dock_sidebar(
+        &mut self,
+        id: String,
+        params: PaneDockSidebarParams,
+    ) -> String {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        if self.pane_is_dock_slot(ws_idx, pane_id) {
+            return encode_error(
+                id,
+                "pane_dock_sidebar_failed",
+                "the docked sidebar slot is client chrome and cannot carry another dock; close the pane to undock it",
+            );
+        }
+        let Some(tab_idx) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.find_tab_index_for_pane(pane_id))
+        else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let ratio = match params.ratio {
+            Some(ratio) if ratio.is_finite() && (0.0..1.0).contains(&ratio) => ratio,
+            Some(ratio) => {
+                return encode_error(
+                    id,
+                    "invalid_dock_ratio",
+                    format!("dock ratio must be between 0.0 and 1.0 exclusive, got {ratio}"),
+                );
+            }
+            None => self
+                .session_dock_ratio()
+                .unwrap_or_else(|| self.default_dock_ratio()),
+        };
+        let Some(dock) = self.apply_default_dock_slot_with_ratio(ws_idx, tab_idx, ratio) else {
+            return encode_error(
+                id,
+                "pane_dock_sidebar_failed",
+                "the docked sidebar can only be created beside a tab's only pane",
+            );
+        };
+        self.state.mark_session_dirty();
+        self.schedule_session_save();
+        let Some(pane) = self.pane_info(ws_idx, dock) else {
+            return encode_error(
+                id,
+                "pane_dock_sidebar_failed",
+                "the docked sidebar slot is unavailable",
+            );
+        };
+        self.emit_event(EventEnvelope {
+            event: EventKind::PaneCreated,
+            data: EventData::PaneCreated { pane: pane.clone() },
+        });
+        self.emit_layout_updated_event(ws_idx, tab_idx);
 
         encode_success(id, ResponseResult::PaneInfo { pane })
     }
