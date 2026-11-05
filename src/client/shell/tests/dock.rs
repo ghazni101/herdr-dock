@@ -422,6 +422,95 @@ fn mode_bar_does_not_cover_the_docked_sidebar() {
 }
 
 #[test]
+fn mode_bar_stops_before_a_right_edge_dock() {
+    let mut snapshot = dock_snapshot();
+    snapshot.focused_pane_id = Some("pane_1".into());
+    snapshot.panes[0].focused = true;
+    snapshot.panes[1].focused = false;
+    let mut state = docked_state(
+        snapshot,
+        surface_with(vec![
+            surface_pane("pane_1", 0, 60, 10, true),
+            surface_pane("pane_dock", 60, 20, 10, false),
+        ]),
+    );
+    state.mode = ClientShellMode::Navigate;
+
+    let frame = state.compose(80, 11).expect("docked sidebar");
+    let rows = frame_rows(&frame);
+    let bottom = rows.last().expect("frame has rows");
+    let pane_columns = bottom.chars().take(60).collect::<String>();
+    let dock_columns = bottom.chars().skip(60).collect::<String>();
+    assert!(
+        pane_columns.contains("NAVIGATE"),
+        "the mode bar must still span the pane area: {bottom:?}"
+    );
+    assert!(
+        !dock_columns.contains("NAVIGATE"),
+        "the mode bar must not run under a right-edge dock: {bottom:?}"
+    );
+}
+
+#[test]
+fn mode_bar_keeps_its_left_edge_when_the_dock_is_above_its_row() {
+    let mut snapshot = dock_snapshot();
+    snapshot.focused_pane_id = Some("pane_1".into());
+    snapshot.panes[0].focused = true;
+    snapshot.panes[1].focused = false;
+    let mut state = docked_state(
+        snapshot,
+        surface_sized(
+            80,
+            10,
+            vec![
+                surface_at("pane_dock", 0, 0, 80, 9, false),
+                surface_at("pane_1", 0, 9, 80, 1, true),
+            ],
+        ),
+    );
+    state.mode = ClientShellMode::Navigate;
+
+    let frame = state.compose(80, 11).expect("docked sidebar");
+    let rows = frame_rows(&frame);
+    let bottom = rows.last().expect("frame has rows");
+    assert!(
+        bottom.starts_with(" NAVIGATE"),
+        "a dock above the bar row must not shift the mode bar: {bottom:?}"
+    );
+}
+
+#[test]
+fn mode_bar_keeps_the_full_width_when_the_dock_is_mid_row() {
+    let mut snapshot = dock_snapshot();
+    snapshot.focused_pane_id = Some("pane_1".into());
+    snapshot.panes[0].focused = true;
+    snapshot.panes[1].focused = false;
+    snapshot.panes.push(ClientShellPane {
+        pane_id: "pane_2".into(),
+        ..snapshot.panes[0].clone()
+    });
+    snapshot.panes[2].focused = false;
+    let mut state = docked_state(
+        snapshot,
+        surface_with(vec![
+            surface_pane("pane_1", 0, 20, 10, true),
+            surface_pane("pane_dock", 20, 20, 10, false),
+            surface_pane("pane_2", 40, 40, 10, false),
+        ]),
+    );
+    state.mode = ClientShellMode::Navigate;
+
+    let frame = state.compose(80, 11).expect("docked sidebar");
+    let rows = frame_rows(&frame);
+    let bottom = rows.last().expect("frame has rows");
+    assert_eq!(
+        cell_symbol_position(&frame, Rect::new(0, 10, 80, 1), "NAVIGATE"),
+        (1, 10),
+        "a mid-row dock must not shift the mode bar: {bottom:?}"
+    );
+}
+
+#[test]
 fn docked_sidebar_controls_are_inert_without_mouse_capture() {
     let mut snapshot = dock_snapshot();
     snapshot.focused_pane_id = Some("pane_1".into());

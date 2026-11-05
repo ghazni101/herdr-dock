@@ -823,7 +823,8 @@ impl AppState {
             .workspaces
             .get(ws_idx)?
             .find_tab_index_for_pane(pane_id)?;
-        let focus_changed = self.focus_pane_in_workspace(ws_idx, pane_id);
+        let focus_changed = !self.pane_is_dock_slot(ws_idx, pane_id)
+            && self.focus_pane_in_workspace(ws_idx, pane_id);
         let tab = self
             .workspaces
             .get_mut(ws_idx)
@@ -4406,6 +4407,41 @@ mod tests {
         let mut state = app_with_workspaces(&["test"]);
         state.toggle_zoom();
         assert!(!state.workspaces[0].zoomed);
+    }
+
+    #[test]
+    fn zooming_the_chrome_slot_never_focuses_it() {
+        let mut state = app_with_workspaces(&["dock-zoom"]);
+        let main = state.workspaces[0].tabs[0].root_pane;
+        let dock = state.workspaces[0].test_split(Direction::Horizontal);
+        state.ensure_test_terminals();
+        let terminal_id = state.workspaces[0].tabs[0]
+            .terminal_id(dock)
+            .cloned()
+            .unwrap();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_manual_label(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL.into());
+        state.workspaces[0].tabs[0].layout.focus_pane(main);
+
+        let noop = state
+            .apply_pane_zoom(0, dock, PaneZoomCommand::Off)
+            .expect("dock pane must be laid out");
+        assert!(!noop.changed);
+        assert!(!noop.focus_changed);
+        assert_eq!(noop.reason, Some(PaneZoomNoopReason::AlreadyUnzoomed));
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(main));
+
+        state.workspaces[0].tabs[0].zoomed = true;
+        let noop = state
+            .apply_pane_zoom(0, dock, PaneZoomCommand::On)
+            .expect("dock pane must be laid out");
+        assert!(!noop.changed);
+        assert!(!noop.focus_changed);
+        assert_eq!(noop.reason, Some(PaneZoomNoopReason::AlreadyZoomed));
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(main));
     }
 
     #[test]

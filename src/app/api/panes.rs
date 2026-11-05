@@ -1515,6 +1515,13 @@ impl App {
         let Some(pane_public_id) = self.public_pane_id(ws_idx, pane_id) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
+        if self.pane_is_dock_slot(ws_idx, pane_id) {
+            return encode_error(
+                id,
+                "pane_zoom_failed",
+                "the docked sidebar slot is client chrome and cannot be zoomed",
+            );
+        }
         let command = match params.mode {
             PaneZoomMode::Toggle => PaneZoomCommand::Toggle,
             PaneZoomMode::On => PaneZoomCommand::On,
@@ -4943,6 +4950,32 @@ mod tests {
             EventData::LayoutUpdated { layout }
                 if layout.focused_pane_id == app.public_pane_id(0, right).unwrap()
         ));
+    }
+
+    #[test]
+    fn api_pane_zoom_rejects_the_dock_slot() {
+        let (mut app, _public_pane_id) = app_with_test_workspace();
+        let dock = dock_first_tab(&mut app);
+        let main = app.state.workspaces[0].tabs[0].root_pane;
+        let dock_public = app.public_pane_id(0, dock).unwrap();
+
+        let response = app.handle_pane_zoom(
+            "req".into(),
+            PaneZoomParams {
+                pane_id: Some(dock_public),
+                mode: PaneZoomMode::Toggle,
+            },
+        );
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "pane_zoom_failed");
+        assert!(
+            error.error.message.contains("sidebar"),
+            "rejection should name the sidebar slot, got {message:?}",
+            message = error.error.message
+        );
+        assert!(!app.state.workspaces[0].tabs[0].zoomed);
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(main));
     }
 
     #[test]

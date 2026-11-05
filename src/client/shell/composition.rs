@@ -1,5 +1,37 @@
 use super::*;
 
+fn mode_bar_pane_area(pane_surface: Rect, dock: Option<Rect>) -> Rect {
+    let Some(dock) = dock else {
+        return pane_surface;
+    };
+    if pane_surface.is_empty() {
+        return pane_surface;
+    }
+    let bar_row = pane_surface.y + pane_surface.height - 1;
+    if dock.y > bar_row || dock.y.saturating_add(dock.height) <= bar_row {
+        return pane_surface;
+    }
+    if dock.x <= pane_surface.x {
+        let start = dock.right().max(pane_surface.x);
+        Rect::new(
+            start,
+            pane_surface.y,
+            pane_surface.right().saturating_sub(start),
+            pane_surface.height,
+        )
+    } else if dock.right() >= pane_surface.right() {
+        let end = dock.x.min(pane_surface.right());
+        Rect::new(
+            pane_surface.x,
+            pane_surface.y,
+            end.saturating_sub(pane_surface.x),
+            pane_surface.height,
+        )
+    } else {
+        pane_surface
+    }
+}
+
 fn restore_mode_bar(
     frame: &mut FrameData,
     bar: Option<Rect>,
@@ -332,17 +364,8 @@ impl ClientShellState {
             && !layout.tab_bar.is_empty()
         {
             layout.tab_bar
-        } else if let Some(dock) = dock_rect {
-            // The docked sidebar is chrome, so the mode bar spans the user's
-            // pane area exactly as it does beside the undocked sidebar.
-            Rect::new(
-                dock.right(),
-                layout.pane_surface.y,
-                layout.pane_surface.right().saturating_sub(dock.right()),
-                layout.pane_surface.height,
-            )
         } else {
-            layout.pane_surface
+            mode_bar_pane_area(layout.pane_surface, dock_rect)
         };
         let mobile_navigate_panel = !layout.mobile_header.is_empty()
             && self.mode == ClientShellMode::Navigate
