@@ -4299,8 +4299,8 @@ mod tests {
             main,
             "focus must step over the dock slot"
         );
-        assert_eq!(focus.focused_pane_id, main_public);
-        assert_ne!(focus.focused_pane_id, dock_public);
+        assert_eq!(focus.focused_pane_id, Some(main_public.clone()));
+        assert_ne!(focus.focused_pane_id, Some(dock_public));
 
         let response = app.handle_pane_focus_direction(
             "req".into(),
@@ -4316,7 +4316,7 @@ mod tests {
         };
         assert!(!focus.changed, "the dock slot is not a navigation target");
         assert_eq!(focus.reason, Some(PaneFocusDirectionReason::NoNeighbor));
-        assert_eq!(focus.focused_pane_id, main_public);
+        assert_eq!(focus.focused_pane_id, Some(main_public));
         assert_eq!(app.state.workspaces[0].tabs[0].layout.focused(), main);
     }
 

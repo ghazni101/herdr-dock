@@ -1484,6 +1484,7 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::Node;
 
     #[test]
     fn generated_workspace_ids_are_short_base32_handles() {
