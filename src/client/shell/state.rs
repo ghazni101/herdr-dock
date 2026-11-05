@@ -5,11 +5,13 @@ pub(super) const DOCKED_SIDEBAR_LABEL: &str = crate::api::schema::DOCKED_SIDEBAR
 pub(super) const DOCKED_MAIN_LABEL: &str = crate::api::schema::DOCKED_MAIN_PANE_LABEL;
 /// Column count of the compact sidebar and of a collapsed dock slot.
 pub(super) const COLLAPSED_SIDEBAR_WIDTH: u16 = 4;
-/// A dock wider than this always renders expanded, even while the preference
-/// says collapsed: the pane split owns the width and may not have moved yet.
-/// A pane split clamps at a 10% ratio, so the compact dock can be wider than
-/// the chrome compact width (4) on a wide terminal.
-pub(super) const DOCKED_COLLAPSED_MAX_WIDTH: u16 = 12;
+/// Largest dock width that can still be the collapsed posture. The pane split
+/// owns the dock width and clamps at a 10% ratio, so a collapsed dock bottoms
+/// out at that share of the surface instead of the chrome compact width.
+pub(super) fn docked_sidebar_collapsed_max_width(surface_width: u16) -> u16 {
+    let split_minimum = (f32::from(surface_width) * 10.0 / 100.0).round() as u16;
+    split_minimum.max(COLLAPSED_SIDEBAR_WIDTH)
+}
 
 pub(super) const MIN_TAB_WIDTH: u16 = 8;
 pub(super) const NEW_TAB_WIDTH: u16 = 3;

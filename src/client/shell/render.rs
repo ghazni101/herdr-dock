@@ -38,16 +38,12 @@ pub(super) fn render_docked_sidebar(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     state: &mut ShellRenderState<'_>,
+    collapsed: bool,
     hits: &mut ShellHitMap,
 ) {
     if area.is_empty() {
         return;
     }
-    // Collapse means the dock should shrink to the compact width. Until the
-    // pane split actually moves, a wide slot keeps the expanded layout instead
-    // of painting a compact strip into empty space.
-    let collapsed =
-        state.sidebar_collapsed && area.width <= super::state::DOCKED_COLLAPSED_MAX_WIDTH;
     if state.endpoints.len() > 1 {
         if collapsed {
             super::endpoint_sidebar::render_collapsed(buffer, area, config, state, hits);
@@ -371,23 +367,29 @@ pub(super) fn render_shell(
         );
     }
     if !config.mouse_capture {
-        hits.sidebar_divider = Rect::default();
-        hits.sidebar_section_divider = Rect::default();
-        hits.sidebar_section_area = Rect::default();
-        hits.workspace_scrollbar = Rect::default();
-        hits.agent_scrollbar = Rect::default();
-        hits.agent_sort_toggle = Rect::default();
-        hits.new_workspace = Rect::default();
-        hits.machines.clear();
-        hits.workspaces.clear();
-        hits.agents.clear();
-        hits.endpoint_agents.clear();
+        clear_mouse_sidebar_hits(&mut hits);
         hits.tab_scroll_left = Rect::default();
         hits.tab_scroll_right = Rect::default();
         hits.new_tab = Rect::default();
         hits.pane_splits.clear();
     }
     hits
+}
+
+/// Drop the sidebar controls that only exist for the mouse. The docked sidebar
+/// renders after `render_shell`, so it shares this clear with the chrome one.
+pub(in crate::client::shell) fn clear_mouse_sidebar_hits(hits: &mut ShellHitMap) {
+    hits.sidebar_divider = Rect::default();
+    hits.sidebar_section_divider = Rect::default();
+    hits.sidebar_section_area = Rect::default();
+    hits.workspace_scrollbar = Rect::default();
+    hits.agent_scrollbar = Rect::default();
+    hits.agent_sort_toggle = Rect::default();
+    hits.new_workspace = Rect::default();
+    hits.machines.clear();
+    hits.workspaces.clear();
+    hits.agents.clear();
+    hits.endpoint_agents.clear();
 }
 
 pub(super) fn put_right_text(buffer: &mut Buffer, area: Rect, y: u16, text: &str, style: Style) {

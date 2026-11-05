@@ -510,10 +510,17 @@ fn restore_tab(
     let mut panes = HashMap::new();
     let mut terminals = Vec::new();
     let mut terminal_runtimes = HashMap::new();
+    let mut dock_panes = HashSet::new();
     let mut failed_imports = 0;
     for id in &pane_ids {
         let old_id = reverse_id_map.get(id);
         let saved_pane = old_id.and_then(|old_id| snap.panes.get(old_id));
+        let saved_label = saved_pane.and_then(|p| p.label.clone());
+        let dock_slot =
+            saved_label.as_deref() == Some(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL);
+        if dock_slot {
+            dock_panes.insert(*id);
+        }
         let saved_cwd = saved_pane
             .map(|p| p.cwd.clone())
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
@@ -532,9 +539,6 @@ fn restore_tab(
             continue;
         }
 
-        let saved_label = saved_pane.and_then(|p| p.label.clone());
-        let dock_slot =
-            saved_label.as_deref() == Some(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL);
         let saved_agent_name = saved_pane.and_then(|p| p.agent_name.clone());
         let saved_managed_agent = saved_pane
             .and_then(|pane| pane.managed_agent_kind.as_deref())
@@ -695,12 +699,15 @@ fn restore_tab(
             Ok(runtime) => {
                 let terminal_id = TerminalId::alloc();
                 let mut terminal = TerminalState::new(terminal_id.clone(), cwd.clone());
-                if was_imported {
+                // The dock slot is an inert placeholder, never a shell: it must
+                // restore its own command and must not respawn a shell on exit
+                // even when the snapshot recorded that command as launch_argv.
+                if let Some(argv) = dock_argv {
+                    terminal = terminal.with_launch_argv(argv);
+                } else if was_imported {
                     if let Some(argv) = saved_launch_argv {
                         terminal = terminal.with_launch_argv(argv).with_respawn_shell_on_exit();
                     }
-                } else if let Some(argv) = dock_argv {
-                    terminal = terminal.with_launch_argv(argv);
                 }
                 if let Some(label) = saved_label {
                     terminal.set_manual_label(label);
@@ -789,6 +796,17 @@ fn restore_tab(
     let pane_ids = collect_pane_ids(&node);
     let Some(focus) = resolve_restored_pane(snap.focused, &id_map, &surviving, &pane_ids) else {
         return (None, failed_imports);
+    };
+    // An older snapshot can restore focus on a docked-sidebar slot. The slot is
+    // client chrome, so start on the first real pane instead.
+    let focus = if dock_panes.contains(&focus) {
+        pane_ids
+            .iter()
+            .copied()
+            .find(|pane| !dock_panes.contains(pane))
+            .unwrap_or(focus)
+    } else {
+        focus
     };
     let Some(root_pane) = resolve_restored_pane(snap.root_pane, &id_map, &surviving, &pane_ids)
     else {
@@ -2175,14 +2193,18 @@ mod tests {
     #[tokio::test]
     async fn restore_keeps_the_dock_slot_on_the_placeholder() {
         let cwd = std::env::current_dir().unwrap();
-        let pane_snapshot = |label: Option<&str>| super::super::snapshot::PaneSnapshot {
-            cwd: cwd.clone(),
-            label: label.map(str::to_string),
-            agent_name: None,
-            managed_agent_kind: None,
-            agent_session: None,
-            agent_resume: None,
-            launch_argv: None,
+        let pane_snapshot = |label: Option<&str>,
+                             launch_argv: Option<Vec<String>>|
+         -> super::super::snapshot::PaneSnapshot {
+            super::super::snapshot::PaneSnapshot {
+                cwd: cwd.clone(),
+                label: label.map(str::to_string),
+                agent_name: None,
+                managed_agent_kind: None,
+                agent_session: None,
+                agent_resume: None,
+                launch_argv,
+            }
         };
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
@@ -2204,14 +2226,18 @@ mod tests {
                         second: Box::new(LayoutSnapshot::Pane(1)),
                     },
                     panes: HashMap::from([
-                        (0, pane_snapshot(None)),
+                        (0, pane_snapshot(None, None)),
                         (
                             1,
-                            pane_snapshot(Some(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL)),
+                            pane_snapshot(
+                                Some(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL),
+                                Some(crate::app::dock_slot_argv()),
+                            ),
                         ),
                     ]),
                     zoomed: false,
-                    focused: Some(0),
+                    // An older snapshot can have left focus on the dock slot.
+                    focused: Some(1),
                     root_pane: Some(0),
                 }],
                 active_tab: 0,
@@ -2224,7 +2250,7 @@ mod tests {
         };
         let (events, _event_rx) = mpsc::channel(8);
 
-        let (_workspaces, terminals, runtimes) = restore(
+        let (workspaces, terminals, runtimes) = restore(
             &snapshot,
             None,
             24,
@@ -2249,6 +2275,10 @@ mod tests {
             dock.launch_argv.is_some(),
             "the dock slot must restore its placeholder command, not the login shell"
         );
+        assert!(
+            !dock.respawn_shell_on_exit,
+            "the dock slot must not respawn a shell after its placeholder exits"
+        );
         #[cfg(unix)]
         assert_eq!(
             dock.launch_argv
@@ -2262,6 +2292,13 @@ mod tests {
             .find(|terminal| terminal.manual_label.is_none())
             .expect("main pane terminal should restore");
         assert_eq!(main.launch_argv, None);
+        let tab = &workspaces[0].tabs[0];
+        let focused = tab.layout.focused();
+        assert_eq!(
+            tab.terminal_id(focused),
+            Some(&main.id),
+            "restore must not focus the dock slot"
+        );
         for (_, runtime) in runtimes {
             runtime.shutdown();
         }

@@ -893,8 +893,28 @@ impl Workspace {
 
         if let Some((removed, _terminal_id)) = self.tabs[tab_idx].remove_pane(pane_id) {
             self.unregister_pane(removed);
+            self.focus_off_slots(tab_idx, &is_slot);
         }
         false
+    }
+
+    /// Focus can fall back to a docked-sidebar slot when the pane it came from
+    /// is gone. The slot is client chrome, so move focus to the first real pane.
+    fn focus_off_slots(&mut self, tab_idx: usize, is_slot: &impl Fn(PaneId) -> bool) {
+        let Some(tab) = self.tabs.get_mut(tab_idx) else {
+            return;
+        };
+        if !is_slot(tab.layout.focused()) {
+            return;
+        }
+        if let Some(primary) = tab
+            .layout
+            .pane_ids()
+            .into_iter()
+            .find(|pane| !is_slot(*pane))
+        {
+            tab.layout.focus_pane_without_history(primary);
+        }
     }
 
     fn pane_removal_shape(
@@ -936,6 +956,7 @@ impl Workspace {
         }
 
         let moved = self.tabs[tab_idx].take_pane_for_move(pane_id)?;
+        self.focus_off_slots(tab_idx, &is_slot);
         Some(TakenPane {
             moved,
             removed_tab_idx: None,
@@ -1137,7 +1158,7 @@ impl Workspace {
         self.active_tab().map(|tab| tab.layout.focused())
     }
 
-    pub fn close_pane(&mut self, pane_id: PaneId) -> bool {
+    pub fn close_pane(&mut self, pane_id: PaneId, is_slot: impl Fn(PaneId) -> bool) -> bool {
         let tab_idx = match self.find_tab_index_for_pane(pane_id) {
             Some(idx) => idx,
             None => return false,
@@ -1160,6 +1181,7 @@ impl Workspace {
 
         if let Some((removed, _terminal_id)) = self.tabs[tab_idx].close_pane(pane_id) {
             self.unregister_pane(removed);
+            self.focus_off_slots(tab_idx, &is_slot);
         }
         false
     }
@@ -1283,7 +1305,7 @@ impl Workspace {
         let mut ws = Self::test_new("adversarial-identity");
         let removed_pane = ws.test_split(Direction::Horizontal);
         ws.test_split(Direction::Vertical);
-        assert!(!ws.close_pane(removed_pane));
+        assert!(!ws.close_pane(removed_pane, |_| false));
         let _unused_raw_id = PaneId::alloc();
         let later_pane = ws.test_split(Direction::Horizontal);
 
@@ -1510,7 +1532,7 @@ mod tests {
         assert_eq!(ws.public_pane_number(second), Some(2));
         assert_eq!(ws.public_pane_number(third), Some(3));
 
-        assert!(!ws.close_pane(second));
+        assert!(!ws.close_pane(second, |_| false));
 
         assert_eq!(ws.public_pane_number(root), Some(1));
         assert_eq!(ws.public_pane_number(second), None);

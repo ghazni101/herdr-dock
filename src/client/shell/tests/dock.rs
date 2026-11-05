@@ -183,8 +183,80 @@ fn pane_cycle_skips_the_dock_slot() {
     ));
 }
 
+fn surface_at(
+    pane_id: &str,
+    x: u16,
+    y: u16,
+    width: u16,
+    height: u16,
+    focused: bool,
+) -> PaneSurfacePane {
+    let mut pane = surface_pane(pane_id, x, width, height, focused);
+    pane.rect.y = y;
+    pane.inner_rect.y = y;
+    pane
+}
+
+/// The dock can win the geometric neighbour tie against main, so the client
+/// must leave dock skipping to the server instead of refusing the move.
 #[test]
-fn focus_and_swap_toward_dock_are_no_ops() {
+fn pane_navigation_steps_past_the_dock_slot() {
+    let mut snapshot = snapshot();
+    snapshot.focused_pane_id = Some("pane_strip".into());
+    snapshot.panes[0].pane_id = "pane_strip".into();
+    snapshot.panes[0].focused = true;
+    let mut main = snapshot.panes[0].clone();
+    main.pane_id = "pane_main".into();
+    main.label = Some(DOCKED_MAIN_LABEL.into());
+    main.focused = false;
+    snapshot.panes.push(main);
+    snapshot.panes.push(dock_pane(false));
+    let mut state = docked_state(
+        snapshot,
+        surface_sized(
+            100,
+            20,
+            vec![
+                surface_at("pane_strip", 0, 0, 50, 4, true),
+                surface_at("pane_dock", 0, 4, 30, 16, false),
+                surface_at("pane_main", 30, 4, 70, 16, false),
+            ],
+        ),
+    );
+
+    let mut focus = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::FocusPaneDown),
+        &mut focus,
+    );
+    assert!(
+        matches!(
+            first_endpoint_method(&focus),
+            crate::api::schema::Method::PaneFocusDirection(params)
+                if params.pane_id.as_deref() == Some("pane_strip")
+                    && params.direction == crate::api::schema::PaneDirection::Down
+        ),
+        "focus must be delegated to the server, which skips the dock"
+    );
+
+    let mut swap = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::SwapPaneDown),
+        &mut swap,
+    );
+    assert!(
+        matches!(
+            first_endpoint_method(&swap),
+            crate::api::schema::Method::PaneSwap(params)
+                if params.pane_id.as_deref() == Some("pane_strip")
+                    && params.direction == Some(crate::api::schema::PaneDirection::Down)
+        ),
+        "swaps must be delegated to the server, which skips the dock"
+    );
+}
+
+#[test]
+fn focus_toward_the_dock_is_delegated_to_the_server() {
     let mut snapshot = dock_snapshot();
     snapshot.focused_pane_id = Some("pane_1".into());
     snapshot.panes[0].focused = true;
@@ -197,20 +269,180 @@ fn focus_and_swap_toward_dock_are_no_ops() {
         ]),
     );
 
-    for action in [
-        crate::input::KeybindAction::FocusPaneLeft,
-        crate::input::KeybindAction::SwapPaneLeft,
-    ] {
-        let mut input = ClientShellInput::default();
-        state.record_binding(crate::input::KeybindMatch::Action(action), &mut input);
-        assert!(
-            input
-                .actions
-                .iter()
-                .all(|action| !matches!(action, ClientShellAction::Endpoint { .. })),
-            "moving toward the dock must not reach the server"
+    let mut input = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::FocusPaneLeft),
+        &mut input,
+    );
+    assert!(
+        matches!(
+            first_endpoint_method(&input),
+            crate::api::schema::Method::PaneFocusDirection(params)
+                if params.pane_id.as_deref() == Some("pane_1")
+                    && params.direction == crate::api::schema::PaneDirection::Left
+        ),
+        "the server owns dock skipping; the client still asks for the move"
+    );
+}
+
+/// The split clamps at 10% of the surface, so a collapsed dock is wider than
+/// the chrome compact width on a wide terminal. It still renders compact once
+/// the split has bottomed out, and stays expanded while the split catches up.
+#[test]
+fn collapsed_dock_renders_compact_at_the_split_minimum() {
+    let docked = |dock_width: u16| {
+        let mut snapshot = dock_snapshot();
+        snapshot.focused_pane_id = Some("pane_1".into());
+        snapshot.panes[0].focused = true;
+        snapshot.panes[1].focused = false;
+        let mut state = docked_state(
+            snapshot,
+            surface_sized(
+                200,
+                20,
+                vec![
+                    surface_at("pane_dock", 0, 0, dock_width, 20, false),
+                    surface_at("pane_1", dock_width, 0, 200 - dock_width, 20, true),
+                ],
+            ),
         );
-    }
+        state.sidebar_collapsed = true;
+        state
+    };
+
+    let frame = docked(20).compose(200, 21).expect("docked sidebar");
+    let text = frame_rows(&frame).join("\n");
+    assert!(
+        !text.contains("spaces"),
+        "a collapsed dock at the split minimum must render compact:\n{text}"
+    );
+    assert!(text.contains('»'), "compact dock keeps its expand toggle");
+
+    let frame = docked(30).compose(200, 21).expect("wide docked sidebar");
+    let text = frame_rows(&frame).join("\n");
+    assert!(
+        text.contains("spaces"),
+        "a dock the split has not shrunk yet keeps the expanded layout:\n{text}"
+    );
+}
+
+/// The docked sidebar must keep the same spaces/footer/agents structure and
+/// right alignment as the chrome sidebar; only its origin and height differ.
+#[test]
+fn docked_sidebar_keeps_the_expanded_footer_layout() {
+    let mut snapshot = dock_snapshot();
+    snapshot.focused_pane_id = Some("pane_1".into());
+    snapshot.panes[0].focused = true;
+    snapshot.panes[1].focused = false;
+    let mut state = docked_state(
+        snapshot,
+        surface_sized(
+            106,
+            29,
+            vec![
+                surface_at("pane_dock", 0, 0, 20, 29, false),
+                surface_at("pane_1", 20, 0, 86, 29, true),
+            ],
+        ),
+    );
+
+    let frame = state.compose(106, 30).expect("docked sidebar");
+    let rows = frame_rows(&frame);
+    let dock_rows = rows[1..30]
+        .iter()
+        .map(|row| row.chars().take(20).collect::<String>())
+        .collect::<Vec<_>>();
+
+    assert!(
+        dock_rows[0].starts_with(" spaces"),
+        "spaces heading: {:?}",
+        dock_rows[0]
+    );
+    assert!(
+        dock_rows.iter().all(|row| row.chars().nth(19) == Some('│')),
+        "the last dock column stays the separator"
+    );
+    let footer = dock_rows
+        .iter()
+        .position(|row| row.starts_with(" new"))
+        .expect("new/menu footer row");
+    assert!(
+        dock_rows[footer]
+            .trim_end_matches('│')
+            .trim_end()
+            .ends_with("menu"),
+        "menu aligns to the content edge: {:?}",
+        dock_rows[footer]
+    );
+    assert!(
+        dock_rows[footer + 1].chars().take(19).all(|ch| ch == '─'),
+        "the section divider spans the content: {:?}",
+        dock_rows[footer + 1]
+    );
+    let agents = &dock_rows[footer + 2];
+    assert!(agents.starts_with(" agents"), "agents heading: {agents:?}");
+    assert!(
+        agents.trim_end_matches('│').trim_end().ends_with("grouped"),
+        "grouped aligns to the content edge: {agents:?}"
+    );
+}
+
+#[test]
+fn mode_bar_does_not_cover_the_docked_sidebar() {
+    let mut snapshot = dock_snapshot();
+    snapshot.focused_pane_id = Some("pane_1".into());
+    snapshot.panes[0].focused = true;
+    snapshot.panes[1].focused = false;
+    let mut state = docked_state(
+        snapshot,
+        surface_with(vec![
+            surface_pane("pane_dock", 0, 20, 10, false),
+            surface_pane("pane_1", 20, 60, 10, true),
+        ]),
+    );
+    state.mode = ClientShellMode::Navigate;
+
+    let frame = state.compose(80, 11).expect("docked sidebar");
+    let rows = frame_rows(&frame);
+    let bottom = rows.last().expect("frame has rows");
+    let dock_columns = bottom.chars().take(20).collect::<String>();
+    let pane_columns = bottom.chars().skip(20).collect::<String>();
+    assert!(
+        dock_columns.contains('\u{ab}'),
+        "the sidebar toggle must survive the mode bar: {bottom:?}"
+    );
+    assert!(
+        pane_columns.contains("NAVIGATE"),
+        "the mode bar still spans the pane area: {bottom:?}"
+    );
+}
+
+#[test]
+fn docked_sidebar_controls_are_inert_without_mouse_capture() {
+    let mut snapshot = dock_snapshot();
+    snapshot.focused_pane_id = Some("pane_1".into());
+    snapshot.panes[0].focused = true;
+    snapshot.panes[1].focused = false;
+    let mut state = docked_state(
+        snapshot,
+        surface_with(vec![
+            surface_pane("pane_dock", 0, 20, 10, false),
+            surface_pane("pane_1", 20, 60, 10, true),
+        ]),
+    );
+    state.config.mouse_capture = false;
+
+    state.compose(80, 11).expect("docked sidebar");
+
+    assert!(state.hits.workspaces.is_empty());
+    assert!(state.hits.agents.is_empty());
+    assert!(state.hits.machines.is_empty());
+    assert_eq!(state.hits.sidebar_section_divider, Rect::default());
+    assert_eq!(state.hits.sidebar_section_area, Rect::default());
+    assert_eq!(state.hits.workspace_scrollbar, Rect::default());
+    assert_eq!(state.hits.agent_scrollbar, Rect::default());
+    assert_eq!(state.hits.agent_sort_toggle, Rect::default());
+    assert_eq!(state.hits.new_workspace, Rect::default());
 }
 
 #[test]

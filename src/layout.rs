@@ -276,6 +276,16 @@ impl TileLayout {
         }
     }
 
+    /// Move focus without recording the pane being left. Used when focus is
+    /// corrected off a client-owned slot that was never user-facing, so a
+    /// later close cannot return to it.
+    pub(crate) fn focus_pane_without_history(&mut self, id: PaneId) {
+        if self.pane_ids().contains(&id) {
+            self.focus = id;
+            self.prev_focus = None;
+        }
+    }
+
     /// Swap two pane ids in the layout tree while preserving split shape and
     /// ratios. Returns true only when both panes exist and are different.
     pub fn swap_panes(&mut self, first: PaneId, second: PaneId) -> bool {

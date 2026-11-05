@@ -880,24 +880,6 @@ impl ClientShellState {
             _ => None,
         };
 
-        if matches!(
-            action,
-            KeybindAction::FocusPaneLeft
-                | KeybindAction::FocusPaneDown
-                | KeybindAction::FocusPaneUp
-                | KeybindAction::FocusPaneRight
-                | KeybindAction::SwapPaneLeft
-                | KeybindAction::SwapPaneDown
-                | KeybindAction::SwapPaneUp
-                | KeybindAction::SwapPaneRight
-        ) && self.direction_lands_on_dock(direction(action)?)
-        {
-            // Stock herdr's sidebar is not a pane: moving or swapping toward it
-            // is a no-op. Swapping would hand the dock the large slot and the
-            // real pane the sleep terminal's sliver.
-            return None;
-        }
-
         match action {
             KeybindAction::FocusAgent(index) => {
                 let agents = super::agent_sidebar::ordered_agent_pane_ids(
@@ -1198,62 +1180,5 @@ impl ClientShellState {
                 amount: Some(amount),
             },
         ))
-    }
-
-    /// True when the nearest pane in `direction` is the docked-sidebar slot,
-    /// which is client chrome and must not take keyboard focus or swaps.
-    fn direction_lands_on_dock(&self, direction: crate::api::schema::PaneDirection) -> bool {
-        use crate::api::schema::PaneDirection;
-        let (Some(surface), Some(dock), Some(focused)) = (
-            self.pane_surface.as_ref(),
-            self.docked_sidebar_pane(),
-            self.focused_pane_id(),
-        ) else {
-            return false;
-        };
-        let rect_of = |pane_id: &str| {
-            surface
-                .panes
-                .iter()
-                .find(|pane| pane.pane_id == pane_id)
-                .map(|pane| Rect::new(pane.rect.x, pane.rect.y, pane.rect.width, pane.rect.height))
-        };
-        let (Some(focus), Some(dock_rect)) = (rect_of(&focused), rect_of(&dock.pane_id)) else {
-            return false;
-        };
-        let overlap_v = |a: Rect, b: Rect| a.y < b.y + b.height && b.y < a.y + a.height;
-        let blocked_by_other = |predicate: &dyn Fn(Rect) -> bool| {
-            surface.panes.iter().any(|pane| {
-                pane.pane_id != focused
-                    && pane.pane_id != dock.pane_id
-                    && predicate(Rect::new(
-                        pane.rect.x,
-                        pane.rect.y,
-                        pane.rect.width,
-                        pane.rect.height,
-                    ))
-            })
-        };
-        match direction {
-            PaneDirection::Left => {
-                dock_rect.x + dock_rect.width <= focus.x
-                    && overlap_v(dock_rect, focus)
-                    && !blocked_by_other(&|rect| {
-                        rect.x + rect.width <= focus.x
-                            && overlap_v(rect, focus)
-                            && rect.x + rect.width > dock_rect.x + dock_rect.width
-                    })
-            }
-            PaneDirection::Right => {
-                dock_rect.x >= focus.x + focus.width
-                    && overlap_v(dock_rect, focus)
-                    && !blocked_by_other(&|rect| {
-                        rect.x >= focus.x + focus.width
-                            && overlap_v(rect, focus)
-                            && rect.x < dock_rect.x
-                    })
-            }
-            PaneDirection::Up | PaneDirection::Down => false,
-        }
     }
 }

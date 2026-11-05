@@ -823,9 +823,7 @@ impl App {
                         .unwrap_or_default(),
                 );
             };
-            let target = self
-                .directional_pane_target(ws_idx, tab_idx, source_pane_id, direction)
-                .filter(|target| !self.pane_is_dock_slot(ws_idx, *target));
+            let target = self.directional_pane_target(ws_idx, tab_idx, source_pane_id, direction);
             match target {
                 Some(target_pane_id) => {
                     (ws_idx, tab_idx, source_pane_id, Some(target_pane_id), None)
@@ -2062,7 +2060,8 @@ impl App {
         let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
             return Err(pane_not_found(id, &target.pane_id));
         };
-        if let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) {
+        let tab_idx = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id);
+        if let Some(tab_idx) = tab_idx {
             if self
                 .state
                 .tab_left_with_only_dock_slots(ws_idx, tab_idx, pane_id)
@@ -2073,6 +2072,9 @@ impl App {
                 return self.close_tab(id, &crate::api::schema::TabTarget { tab_id });
             }
         }
+        let dock_panes = tab_idx
+            .map(|tab_idx| self.tab_dock_slot_panes(ws_idx, tab_idx))
+            .unwrap_or_default();
         let workspace_id = self.public_workspace_id(ws_idx);
         let layout_update_target = self.layout_update_target_after_pane_removal(ws_idx, pane_id);
         if self.state.close_pane_would_close_workspace(ws_idx, pane_id) {
@@ -2094,7 +2096,7 @@ impl App {
             let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
                 return Err(pane_not_found(id, &target.pane_id));
             };
-            ws.close_pane(pane_id)
+            ws.close_pane(pane_id, |pane| dock_panes.contains(&pane))
         };
         self.state.remove_plugin_pane_records([pane_id]);
         if should_close_workspace {
@@ -2223,7 +2225,14 @@ impl App {
         direction: PaneDirection,
     ) -> Option<PaneId> {
         let tab = self.state.workspaces.get(ws_idx)?.tabs.get(tab_idx)?;
-        let panes = tab.layout.panes(self.state.view.terminal_area);
+        // The docked sidebar is client chrome, not a user pane: navigation and
+        // swaps step over it exactly as they would without it.
+        let panes = tab
+            .layout
+            .panes(self.state.view.terminal_area)
+            .into_iter()
+            .filter(|pane| !self.pane_is_dock_slot(ws_idx, pane.id))
+            .collect::<Vec<_>>();
         let source = panes.iter().find(|pane| pane.id == source_pane_id)?;
         find_in_direction(source, direction.into(), &panes)
     }
@@ -4207,6 +4216,186 @@ mod tests {
 
         assert!(app.state.workspaces.is_empty());
         assert!(!app.state.terminals.contains_key(&dock_terminal));
+    }
+
+    /// The monitor-strip layout: a full-width strip above a docked sidebar and
+    /// the user's main pane. The dock is wide enough to win the geometric
+    /// neighbour tie against main, which is exactly when navigation used to
+    /// land on the chrome slot.
+    fn strip_docked_tab(app: &mut App) -> (PaneId, PaneId, PaneId, PaneId) {
+        let main = app.state.workspaces[0].tabs[0].root_pane;
+        app.state.workspaces[0].tabs[0].layout.focus_pane(main);
+        let ws = &mut app.state.workspaces[0];
+        let strip = ws.test_split(ratatui::layout::Direction::Vertical);
+        assert!(ws.tabs[0].layout.swap_panes(main, strip));
+        assert!(ws.tabs[0].layout.set_ratio_at(&[], 0.2));
+        ws.tabs[0].layout.focus_pane(strip);
+        let right = ws.test_split(ratatui::layout::Direction::Horizontal);
+        assert!(ws.tabs[0].layout.set_ratio_at(&[false], 0.5));
+        ws.tabs[0].layout.focus_pane(main);
+        let dock = ws.test_split(ratatui::layout::Direction::Horizontal);
+        assert!(ws.tabs[0].layout.swap_panes(main, dock));
+        assert!(ws.tabs[0].layout.set_ratio_at(&[true], 0.3));
+        ws.tabs[0].layout.focus_pane(main);
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.workspaces[0].tabs[0]
+            .terminal_id(dock)
+            .cloned()
+            .unwrap();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_manual_label(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL.into());
+        (strip, right, dock, main)
+    }
+
+    fn expect_success(response: &str) {
+        let error: serde_json::Value = serde_json::from_str(response).unwrap();
+        assert!(
+            error.get("error").is_none(),
+            "expected success, got {response}"
+        );
+    }
+
+    #[test]
+    fn pane_focus_direction_skips_the_dock_slot() {
+        let (mut app, _public_pane_id) = app_with_test_workspace();
+        let (strip, _right, dock, main) = strip_docked_tab(&mut app);
+        compute_test_view(&mut app);
+        let strip_public = app.public_pane_id(0, strip).unwrap();
+
+        let response = app.handle_pane_focus_direction(
+            "req".into(),
+            PaneFocusDirectionParams {
+                pane_id: Some(strip_public),
+                direction: PaneDirection::Down,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneFocusDirection { focus } = success.result else {
+            panic!("expected pane focus direction response");
+        };
+        assert_eq!(
+            app.state.workspaces[0].tabs[0].layout.focused(),
+            main,
+            "focus must step over the dock slot"
+        );
+        assert_eq!(focus.focused_pane_id, app.public_pane_id(0, main));
+        assert_ne!(focus.focused_pane_id, app.public_pane_id(0, dock));
+    }
+
+    #[test]
+    fn pane_swap_direction_skips_the_dock_slot() {
+        let (mut app, _public_pane_id) = app_with_test_workspace();
+        let (strip, _right, dock, main) = strip_docked_tab(&mut app);
+        compute_test_view(&mut app);
+        let strip_public = app.public_pane_id(0, strip).unwrap();
+
+        let response = app.handle_pane_swap(
+            "req".into(),
+            PaneSwapParams {
+                pane_id: Some(strip_public),
+                direction: Some(PaneDirection::Down),
+                ..PaneSwapParams::default()
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneSwap { swap } = success.result else {
+            panic!("expected pane swap response");
+        };
+        assert!(swap.changed, "swap must step over the dock slot");
+        assert_eq!(swap.target_pane_id, app.public_pane_id(0, main));
+        assert_ne!(swap.target_pane_id, app.public_pane_id(0, dock));
+    }
+
+    /// Closing the focused pane with no focus history used to pick the next
+    /// pane in tree order, which is the dock slot.
+    #[test]
+    fn closing_a_pane_never_moves_focus_to_the_dock_slot() {
+        let (mut app, _public_pane_id) = app_with_test_workspace();
+        let (strip, right, dock, main) = strip_docked_tab(&mut app);
+        app.state.workspaces[0].tabs[0].layout.focus_pane(right);
+        let main_public = app.public_pane_id(0, main).unwrap();
+        expect_success(&app.handle_pane_close(
+            "req".into(),
+            PaneTarget {
+                pane_id: main_public,
+            },
+        ));
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.focused(), right);
+
+        let right_public = app.public_pane_id(0, right).unwrap();
+        expect_success(&app.handle_pane_close(
+            "req".into(),
+            PaneTarget {
+                pane_id: right_public,
+            },
+        ));
+
+        let focused = app.state.workspaces[0].tabs[0].layout.focused();
+        assert_eq!(focused, strip, "focus must not land on the dock slot");
+        assert_ne!(focused, dock);
+    }
+
+    #[test]
+    fn pane_death_never_moves_focus_to_the_dock_slot() {
+        let (mut app, _public_pane_id) = app_with_test_workspace();
+        let (strip, right, dock, main) = strip_docked_tab(&mut app);
+        app.state.workspaces[0].tabs[0].layout.focus_pane(right);
+        let main_public = app.public_pane_id(0, main).unwrap();
+        expect_success(&app.handle_pane_close(
+            "req".into(),
+            PaneTarget {
+                pane_id: main_public,
+            },
+        ));
+
+        app.state
+            .handle_app_event(crate::events::AppEvent::PaneDied {
+                pane_id: right,
+                exit_reason: crate::platform::ChildExitReason::Exited,
+            });
+
+        let focused = app.state.workspaces[0].tabs[0].layout.focused();
+        assert_eq!(focused, strip, "focus must not land on the dock slot");
+        assert_ne!(focused, dock);
+    }
+
+    #[tokio::test]
+    async fn moving_the_focused_pane_never_moves_focus_to_the_dock_slot() {
+        let (mut app, _public_pane_id) = app_with_test_workspace();
+        app.state.default_shell = crate::app::exiting_test_command().into();
+        let (strip, right, dock, main) = strip_docked_tab(&mut app);
+        app.state.workspaces[0].tabs[0].layout.focus_pane(right);
+        let main_public = app.public_pane_id(0, main).unwrap();
+        expect_success(&app.handle_pane_close(
+            "req".into(),
+            PaneTarget {
+                pane_id: main_public,
+            },
+        ));
+        let right_public = app.public_pane_id(0, right).unwrap();
+
+        let response = app.handle_pane_move(
+            "req".into(),
+            PaneMoveParams {
+                pane_id: right_public,
+                destination: PaneMoveDestination::NewTab {
+                    workspace_id: None,
+                    label: None,
+                },
+                focus: true,
+            },
+        );
+
+        expect_success(&response);
+        let focused = app.state.workspaces[0].tabs[0].layout.focused();
+        assert_eq!(focused, strip, "focus must not land on the dock slot");
+        assert_ne!(focused, dock);
+        crate::app::api::test_support::shutdown_test_runtimes(&mut app);
     }
 
     #[test]

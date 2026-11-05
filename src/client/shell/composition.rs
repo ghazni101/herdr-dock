@@ -332,6 +332,15 @@ impl ClientShellState {
             && !layout.tab_bar.is_empty()
         {
             layout.tab_bar
+        } else if let Some(dock) = dock_rect {
+            // The docked sidebar is chrome, so the mode bar spans the user's
+            // pane area exactly as it does beside the undocked sidebar.
+            Rect::new(
+                dock.right(),
+                layout.pane_surface.y,
+                layout.pane_surface.right().saturating_sub(dock.right()),
+                layout.pane_surface.height,
+            )
         } else {
             layout.pane_surface
         };
@@ -395,11 +404,19 @@ impl ClientShellState {
                     dragged_workspace_id,
                     workspace_drop_indicator_row,
                 },
+                self.sidebar_collapsed
+                    && dock_rect.width
+                        <= super::state::docked_sidebar_collapsed_max_width(surface.frame.width),
                 &mut self.hits,
             );
             blit_buffer_region(&mut frame, &sidebar_buffer, dock_rect);
             // Width is owned by the pane split, not the chrome drag handle.
             self.hits.sidebar_divider = Rect::default();
+            if !self.config.mouse_capture {
+                // The dock renders after the chrome clear, so clear its
+                // invisible controls the same way.
+                render::clear_mouse_sidebar_hits(&mut self.hits);
+            }
         }
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();
