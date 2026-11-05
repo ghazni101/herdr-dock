@@ -50,7 +50,11 @@ fn surface_pane(pane_id: &str, x: u16, width: u16, height: u16, focused: bool) -
 }
 
 fn surface_with(panes: Vec<PaneSurfacePane>) -> PaneSurfaceFrame {
-    let buffer = Buffer::empty(Rect::new(0, 0, 80, 10));
+    surface_sized(80, 10, panes)
+}
+
+fn surface_sized(cols: u16, rows: u16, panes: Vec<PaneSurfacePane>) -> PaneSurfaceFrame {
+    let buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
     PaneSurfaceFrame {
         boot_id: "boot-1".into(),
         projection_revision: 1,
@@ -285,4 +289,75 @@ fn collapsing_a_docked_sidebar_resizes_and_restores_the_split() {
     };
     assert_eq!(params.direction, crate::api::schema::PaneDirection::Right);
     assert!((params.amount.expect("resize amount") - 0.2).abs() < 1e-6);
+}
+
+/// Regression: the docked posture clears `hits.sidebar_divider` because the
+/// pane split owns the sidebar width, and the spaces/agents drag used to read
+/// its extent from that cleared rect, so the section divider never moved.
+#[test]
+fn docked_sidebar_section_divider_drag_resizes_the_split() {
+    let mut snapshot = dock_snapshot();
+    snapshot.focused_pane_id = Some("pane_1".into());
+    snapshot.panes[0].focused = true;
+    snapshot.panes[1].focused = false;
+    let mut state = docked_state(
+        snapshot,
+        surface_sized(
+            106,
+            30,
+            vec![
+                surface_pane("pane_dock", 0, 20, 30, false),
+                surface_pane("pane_1", 20, 86, 30, true),
+            ],
+        ),
+    );
+    state.compose(106, 30).expect("docked sidebar");
+    assert!(state.has_docked_sidebar());
+    assert_eq!(state.hits.sidebar_divider, Rect::default());
+    let area = state.hits.sidebar_section_area;
+    assert_eq!(area.height, 30);
+    let section_divider = state.hits.sidebar_section_divider;
+    assert!(
+        !section_divider.is_empty(),
+        "docked section divider must register a hit"
+    );
+    assert_eq!(section_divider.y, area.y + 15);
+    assert!((state.sidebar_section_split - 0.5).abs() < f32::EPSILON);
+
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: section_divider.x + 2,
+        row: section_divider.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(matches!(
+        state.chrome_drag,
+        Some(ClientChromeDrag::SidebarSection)
+    ));
+
+    let split = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: section_divider.x + 2,
+        row: area.y + 24,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(state.sidebar_section_split_manual);
+    assert!(
+        (state.sidebar_section_split - 0.8).abs() < 1e-6,
+        "docked drag must move the split, got {}",
+        state.sidebar_section_split
+    );
+    assert!(split.repaint);
+    assert!(!split.resize);
+
+    state.compose(106, 30).expect("docked sidebar after drag");
+    assert_eq!(state.hits.sidebar_section_divider.y, area.y + 24);
+
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: section_divider.x + 2,
+        row: area.y + 24,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(state.chrome_drag.is_none());
 }
