@@ -1,5 +1,37 @@
 use super::*;
 
+fn mode_bar_pane_area(pane_surface: Rect, dock: Option<Rect>) -> Rect {
+    let Some(dock) = dock else {
+        return pane_surface;
+    };
+    if pane_surface.is_empty() {
+        return pane_surface;
+    }
+    let bar_row = pane_surface.y + pane_surface.height - 1;
+    if dock.y > bar_row || dock.y.saturating_add(dock.height) <= bar_row {
+        return pane_surface;
+    }
+    if dock.x <= pane_surface.x {
+        let start = dock.right().max(pane_surface.x);
+        Rect::new(
+            start,
+            pane_surface.y,
+            pane_surface.right().saturating_sub(start),
+            pane_surface.height,
+        )
+    } else if dock.right() >= pane_surface.right() {
+        let end = dock.x.min(pane_surface.right());
+        Rect::new(
+            pane_surface.x,
+            pane_surface.y,
+            end.saturating_sub(pane_surface.x),
+            pane_surface.height,
+        )
+    } else {
+        pane_surface
+    }
+}
+
 fn restore_mode_bar(
     frame: &mut FrameData,
     bar: Option<Rect>,
@@ -333,7 +365,7 @@ impl ClientShellState {
         {
             layout.tab_bar
         } else {
-            layout.pane_surface
+            mode_bar_pane_area(layout.pane_surface, dock_rect)
         };
         let mobile_navigate_panel = !layout.mobile_header.is_empty()
             && self.mode == ClientShellMode::Navigate
@@ -395,11 +427,19 @@ impl ClientShellState {
                     dragged_workspace_id,
                     workspace_drop_indicator_row,
                 },
+                self.sidebar_collapsed
+                    && dock_rect.width
+                        <= super::state::docked_sidebar_collapsed_max_width(surface.frame.width),
                 &mut self.hits,
             );
             blit_buffer_region(&mut frame, &sidebar_buffer, dock_rect);
             // Width is owned by the pane split, not the chrome drag handle.
             self.hits.sidebar_divider = Rect::default();
+            if !self.config.mouse_capture {
+                // The dock renders after the chrome clear, so clear its
+                // invisible controls the same way.
+                render::clear_mouse_sidebar_hits(&mut self.hits);
+            }
         }
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();

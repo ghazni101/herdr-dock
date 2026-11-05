@@ -1047,7 +1047,7 @@ mod tests {
         let third = state.workspaces[0].test_split(Direction::Vertical);
         let second_tab = state.workspaces[0].test_add_tab(None);
 
-        state.workspaces[0].close_pane(second);
+        state.workspaces[0].close_pane(second, |_| false);
 
         let snapshot = capture_from_state(&state);
         let workspace = &snapshot.workspaces[0];

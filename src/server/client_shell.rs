@@ -780,6 +780,178 @@ mod tests {
         assert!(snapshot(&app, "boot", 2, None, None).integration_updates_available);
     }
 
+    /// End-to-end target layout: strip above, docked sidebar below-left, main
+    /// below-right. The sidebar must exactly cover the dock pane's slot, sit
+    /// flush against the main pane's border, and keep its footer alignment.
+    #[tokio::test(flavor = "current_thread")]
+    async fn docked_client_composes_the_target_layout() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = crate::app::App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("dock")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let main = app.state.workspaces[0].tabs[0].root_pane;
+        app.state.workspaces[0].tabs[0].layout.focus_pane(main);
+        let ws = &mut app.state.workspaces[0];
+        let strip = ws.test_split(ratatui::layout::Direction::Vertical);
+        assert!(ws.tabs[0].layout.swap_panes(main, strip));
+        assert!(ws.tabs[0].layout.set_ratio_at(&[], 0.2));
+        ws.tabs[0].layout.focus_pane(strip);
+        let right = ws.test_split(ratatui::layout::Direction::Horizontal);
+        assert!(ws.tabs[0].layout.set_ratio_at(&[false], 0.5));
+        ws.tabs[0].layout.focus_pane(main);
+        let dock = ws.test_split(ratatui::layout::Direction::Horizontal);
+        assert!(ws.tabs[0].layout.swap_panes(main, dock));
+        assert!(ws.tabs[0].layout.set_ratio_at(&[true], 0.25));
+        ws.tabs[0].layout.focus_pane(main);
+        app.state.ensure_test_terminals();
+        let dock_terminal = app.state.workspaces[0].tabs[0]
+            .terminal_id(dock)
+            .cloned()
+            .expect("dock terminal");
+        app.state
+            .terminals
+            .get_mut(&dock_terminal)
+            .expect("dock terminal state")
+            .set_manual_label(crate::api::schema::DOCKED_SIDEBAR_PANE_LABEL.into());
+
+        let cols = 120;
+        let rows = 55;
+        let target = crate::ui::TabSurfaceTarget {
+            workspace_index: 0,
+            tab_index: 0,
+        };
+        let revision = 11;
+        let rendered = render_pane_surface(
+            &mut app,
+            Some(target),
+            Rect::new(0, 0, cols, rows - 1),
+            false,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+            &crate::kitty_graphics::surface::DeliveryCache::default(),
+            0,
+        )
+        .expect("rendered surface");
+        let surface = crate::protocol::PaneSurfaceFrame {
+            boot_id: "boot".into(),
+            projection_revision: revision,
+            surface_revision: 1,
+            frame: rendered.frame,
+            panes: rendered.panes,
+            splits: rendered.splits,
+            popup: rendered.popup,
+            graphics: rendered.graphics,
+        };
+        let pane_rect = |pane_id| {
+            surface
+                .panes
+                .iter()
+                .find(|pane| pane.pane_id == app.public_pane_id(0, pane_id).unwrap())
+                .expect("pane in surface")
+                .rect
+        };
+        let strip_surface = pane_rect(strip);
+        let right_surface = pane_rect(right);
+        let dock_surface = pane_rect(dock);
+        let main_surface = pane_rect(main);
+        assert_eq!(strip_surface.y, 0, "the strip is the top row");
+        assert_eq!(
+            u32::from(strip_surface.width) + u32::from(right_surface.width),
+            u32::from(cols),
+            "the strip spans the full width"
+        );
+        assert_eq!(
+            u32::from(strip_surface.height),
+            u32::from(main_surface.y),
+            "the dock row starts below the strip"
+        );
+        assert_eq!(
+            u32::from(dock_surface.x) + u32::from(dock_surface.width),
+            u32::from(main_surface.x),
+            "the dock slot must be flush against the main pane"
+        );
+        assert_eq!(dock_surface.y, main_surface.y);
+
+        let mut shell = crate::client::ClientShellState::new(
+            crate::client::ClientShellConfig::from_config(&crate::config::Config::default()),
+        );
+        shell.set_snapshot(Box::new(snapshot(&app, "boot", revision, None, None)));
+        shell.set_pane_surface(surface);
+        let composed = shell.compose(cols, rows).expect("composed frame");
+        let rows_text = composed
+            .frame
+            .cells
+            .chunks(composed.frame.width as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        let dock_rect = Rect::new(
+            dock_surface.x,
+            1 + dock_surface.y,
+            dock_surface.width,
+            dock_surface.height,
+        );
+        let take = |row: &str| {
+            row.chars()
+                .skip(dock_rect.x as usize)
+                .take(dock_rect.width as usize)
+                .collect::<String>()
+        };
+        let heading = take(&rows_text[dock_rect.y as usize]);
+        assert!(
+            heading.starts_with(" spaces"),
+            "spaces heading: {heading:?}"
+        );
+        let footer_row = (dock_rect.y..dock_rect.bottom())
+            .map(|row| take(&rows_text[row as usize]))
+            .position(|row| row.starts_with(" new"))
+            .map(|offset| dock_rect.y + offset as u16)
+            .expect("new/menu footer");
+        let footer = take(&rows_text[footer_row as usize]);
+        assert!(
+            footer.trim_end_matches('│').trim_end().ends_with("menu"),
+            "menu must end at the content edge: {footer:?}"
+        );
+        let divider = take(&rows_text[(footer_row + 1) as usize]);
+        assert!(
+            divider.trim_end_matches('│').chars().all(|ch| ch == '─'),
+            "section divider: {divider:?}"
+        );
+        let agents = take(&rows_text[(footer_row + 2) as usize]);
+        assert!(agents.starts_with(" agents"), "agents heading: {agents:?}");
+        assert!(
+            agents.trim_end_matches('│').trim_end().ends_with("grouped"),
+            "grouped must end at the content edge: {agents:?}"
+        );
+
+        let middle = dock_rect.y + dock_rect.height / 2;
+        let row = rows_text[middle as usize].chars().collect::<Vec<_>>();
+        assert_ne!(
+            row[dock_rect.x as usize], '│',
+            "the dock pane's own border must be covered by the sidebar"
+        );
+        assert_eq!(
+            row[(dock_rect.right() - 1) as usize],
+            '│',
+            "the sidebar separator keeps the dock's last column"
+        );
+        assert_eq!(
+            row[main_surface.x as usize], '│',
+            "the main pane border sits on the column after the sidebar"
+        );
+    }
+
     #[test]
     fn split_hits_follow_released_border_and_gap_geometry() {
         let horizontal = crate::layout::SplitBorder {
