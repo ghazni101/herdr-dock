@@ -226,6 +226,8 @@ herdr pane close <pane_id>
 
 接受 `--current` 的窗格命令在 Herdr 窗格内运行时使用调用方的 `HERDR_PANE_ID`。对 `pane split` 而言，显式窗格 ID 或 `--pane ID` 拆分指定窗格。省略目标时，若存在 `HERDR_PANE_ID` 则拆分调用方窗格，否则使用当前聚焦的窗格。`--current` 必须有调用方窗格；缺少 `HERDR_PANE_ID` 时会报错。拆分响应中的新窗格 ID 位于 `.result.pane.pane_id`。
 
+`pane dock-sidebar` 会在标签页只含该窗格时,在其旁边创建停靠侧边栏槽位。可选的 `--ratio` 设置槽位宽度占比;省略时,若会话已有停靠宽度则继承该宽度,否则使用默认宽度占比。该槽位运行无 shell、无 rc 文件的惰性占位进程,不会获得焦点,也不会被智能体检测看到。`herdr:sidebar` 标签是保留的:`pane rename` 既拒绝写入该标签,也拒绝把槽位改成其他名称。一旦任意标签页已停靠,之后的 `workspace create` 和 `tab create` 会继承匹配的槽位;返回的根窗格仍是工作窗格,而不是槽位。`pane move` 拒绝把槽位作为来源或目标。如果关闭最后一个工作窗格后只剩停靠槽位,标签页会关闭。要取消停靠,关闭槽位窗格即可。
+
 执行 `pane move` 后,后续命令应使用 `.result.move_result.pane.pane_id`。跨工作区移动会改变带工作区前缀的窗格 ID;旧值保留在 `.result.move_result.previous_pane_id`。运行中进程的 `HERDR_PANE_ID`、`HERDR_TAB_ID` 和 `HERDR_WORKSPACE_ID` 保持启动时的值,但 Herdr 会把旧窗格 ID 保留为该终端的别名,所以使用 `--current` 的窗格命令仍能解析它。实时智能体名称也会跟随终端。
 
 读取输出:

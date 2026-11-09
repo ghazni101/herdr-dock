@@ -362,8 +362,9 @@ crate::cli::projection::cli_params! {
         /// Pane the docked sidebar slot is created beside. Its tab must hold
         /// exactly that one pane.
         pub pane_id: String => Field::new(String::new()).input(binding::pane_id()),
-        /// Width share of the new slot, from 0.0 to 1.0 exclusive. Defaults to
-        /// the width the session's existing dock already uses.
+        /// Width share of the new slot, from 0.0 to 1.0 exclusive. When omitted,
+        /// inherits the session dock width when one exists, otherwise uses the
+        /// default width share.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub ratio: Option<f32> => Field::new(None).input(binding::finite("ratio")),
     }
