@@ -25,7 +25,7 @@ Panes can be split right or down. They can be renamed manually, read from the CL
 
 ## Docked sidebar
 
-When a session uses the docked sidebar, each tab keeps a left-hand pane labelled `herdr:sidebar`. The client paints its sidebar over that slot. The slot is not a working terminal: it never receives focus, and pane move rejects it as both source and destination.
+When a session uses the docked sidebar, each docked tab keeps a left-hand pane labelled `herdr:sidebar`. The client paints its sidebar over that slot. The slot is not a working terminal: it never receives focus, and pane move rejects it as both source and destination.
 
 Once any tab in the session carries that slot, new workspaces and tabs created through the normal create paths get one too, matching the session's dock width. Paths that supply their own layout, such as `layout apply` and plugin-opened tabs, keep exactly the panes they build. A session that never docked stays untouched.
 
