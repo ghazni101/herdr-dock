@@ -2577,7 +2577,7 @@
               "type": "string"
             },
             "ratio": {
-              "description": "Width share of the new slot, from 0.0 to 1.0 exclusive. Defaults to\nthe width the session's existing dock already uses.",
+              "description": "Width share of the new slot, from 0.0 to 1.0 exclusive. When omitted,\ninherits the session dock width when one exists, otherwise uses the\ndefault width share.",
               "format": "float",
               "type": [
                 "number",

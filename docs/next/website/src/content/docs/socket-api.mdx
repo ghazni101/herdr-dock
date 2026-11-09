@@ -135,13 +135,14 @@ omitted. `pane.move` always requires the source `pane_id`.
 `pane.dock_sidebar` creates the docked-sidebar slot beside a pane whose tab
 holds exactly that one pane, so a dock is never assembled by labelling an
 existing pane. It takes the target `pane_id` and an optional `ratio`, the
-slot's width share, defaulting to the width the session's dock already uses. The
-response is `pane_info` for the new slot. The slot runs an inert placeholder
-with no shell or rc files, is never focused or reported as focused, and is
-invisible to agent detection. Servers that support the call advertise
-`capabilities.dock_sidebar`. The `herdr:sidebar` label is reserved:
-`pane.rename` refuses both writing it and renaming the slot away, and
-`layout.apply` rejects a layout that assigns it. Close the slot pane to undock.
+slot's width share. Omit `ratio` to inherit the session dock width when one
+exists, otherwise the default width share. The response is `pane_info` for the
+new slot. The slot runs an inert placeholder with no shell or rc files, is never
+focused or reported as focused, and is invisible to agent detection. Servers
+that support the call advertise `capabilities.dock_sidebar`. The
+`herdr:sidebar` label is reserved: `pane.rename` refuses both writing it and
+renaming the slot away, and `layout.apply` rejects a layout that assigns it.
+Close the slot pane to undock.
 
 `pane.send_keys` and `pane.send_input.keys` accept Herdr key-combo strings:
 plain printable keys, special keys like `enter` and `esc`, modifier chords
