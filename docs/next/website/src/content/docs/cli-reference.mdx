@@ -236,6 +236,17 @@ the calling pane when `HERDR_PANE_ID` is available, otherwise the focused pane.
 `--current` requires a calling pane and errors when `HERDR_PANE_ID` is unavailable.
 The split response exposes the new pane ID as `.result.pane.pane_id`.
 
+`pane dock-sidebar` creates the docked-sidebar slot beside a pane whose tab
+holds exactly that one pane. Optional `--ratio` sets the slot's width share;
+omit it to reuse the width the session's dock already uses. The slot runs an
+inert placeholder with no shell or rc files, never receives focus, and is
+invisible to agent detection. The `herdr:sidebar` label is reserved:
+`pane rename` refuses both writing it and renaming the slot away. Once any tab
+is docked, later `workspace create` and `tab create` calls inherit a matching
+slot; the reported root pane stays the working pane, not the slot. `pane move`
+rejects the slot as source or destination. Closing the last working pane while
+only the dock remains closes the tab. Close the slot pane to undock.
+
 `pane input --right-click pane` forwards unmodified right-click gestures to a
 mouse-reporting pane application. `herdr` restores the default pane menu.
 Right-clicking the pane frame still opens Herdr's menu. `pane split
