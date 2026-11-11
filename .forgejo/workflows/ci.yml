@@ -147,12 +147,6 @@ jobs:
           set -eu
           cache="${XDG_CACHE_HOME:-$HOME/.cache}/herdr-ci"
           run_cache="$cache/run-${GITHUB_RUN_ID}"
-          mkdir -p "$cache"
-          for stale in "$cache"/run-*; do
-            [ -e "$stale" ] || continue
-            [ "$stale" = "$run_cache" ] && continue
-            rm -rf "$stale"
-          done
           mkdir -p "$run_cache"
 
           if command -v rustup >/dev/null 2>&1; then
