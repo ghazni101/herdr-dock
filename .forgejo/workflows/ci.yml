@@ -51,8 +51,13 @@ jobs:
     steps:
       - name: checkout
         run: |
-          git clone --quiet "http://x:$GITHUB_TOKEN@${GITHUB_SERVER_URL#http://}/$GITHUB_REPOSITORY.git" .
-          git checkout --quiet "$GITHUB_SHA" 2>/dev/null || { git fetch --quiet origin "$GITHUB_REF"; git checkout --quiet FETCH_HEAD; }
+          auth_header="AUTHORIZATION: basic $(printf '%s' "x:${GITHUB_TOKEN}" | base64 | tr -d '\n')"
+          repo_url="${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          git -c http.extraHeader="$auth_header" clone --quiet "$repo_url" .
+          git checkout --quiet "$GITHUB_SHA" 2>/dev/null || {
+            git -c http.extraHeader="$auth_header" fetch --quiet origin "$GITHUB_REF"
+            git checkout --quiet FETCH_HEAD
+          }
       - name: classify
         id: classify
         env:
@@ -65,7 +70,8 @@ jobs:
             exit 0
           fi
           if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
-            git fetch --quiet origin "$BASE_REF"
+            auth_header="AUTHORIZATION: basic $(printf '%s' "x:${GITHUB_TOKEN}" | base64 | tr -d '\n')"
+            git -c http.extraHeader="$auth_header" fetch --quiet origin "$BASE_REF"
           fi
           # --quiet exits 1 on a difference and >1 on an error; both take the
           # else branch, so a diff failure cannot mark a merge request docs-only.
@@ -82,8 +88,13 @@ jobs:
     steps:
       - name: checkout
         run: |
-          git clone --quiet "http://x:$GITHUB_TOKEN@${GITHUB_SERVER_URL#http://}/$GITHUB_REPOSITORY.git" .
-          git checkout --quiet "$GITHUB_SHA" 2>/dev/null || { git fetch --quiet origin "$GITHUB_REF"; git checkout --quiet FETCH_HEAD; }
+          auth_header="AUTHORIZATION: basic $(printf '%s' "x:${GITHUB_TOKEN}" | base64 | tr -d '\n')"
+          repo_url="${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          git -c http.extraHeader="$auth_header" clone --quiet "$repo_url" .
+          git checkout --quiet "$GITHUB_SHA" 2>/dev/null || {
+            git -c http.extraHeader="$auth_header" fetch --quiet origin "$GITHUB_REF"
+            git checkout --quiet FETCH_HEAD
+          }
 
       - name: validate merge request title
         if: github.event_name == 'pull_request'
@@ -121,8 +132,13 @@ jobs:
     steps:
       - name: checkout
         run: |
-          git clone --quiet "http://x:$GITHUB_TOKEN@${GITHUB_SERVER_URL#http://}/$GITHUB_REPOSITORY.git" .
-          git checkout --quiet "$GITHUB_SHA" 2>/dev/null || { git fetch --quiet origin "$GITHUB_REF"; git checkout --quiet FETCH_HEAD; }
+          auth_header="AUTHORIZATION: basic $(printf '%s' "x:${GITHUB_TOKEN}" | base64 | tr -d '\n')"
+          repo_url="${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}.git"
+          git -c http.extraHeader="$auth_header" clone --quiet "$repo_url" .
+          git checkout --quiet "$GITHUB_SHA" 2>/dev/null || {
+            git -c http.extraHeader="$auth_header" fetch --quiet origin "$GITHUB_REF"
+            git checkout --quiet FETCH_HEAD
+          }
 
       # Uses the pinned Rust, Zig and Bun versions the runner already provides,
       # and installs only a missing dependency into the persistent runner cache.
@@ -130,7 +146,8 @@ jobs:
         run: |
           set -eu
           cache="${XDG_CACHE_HOME:-$HOME/.cache}/herdr-ci"
-          mkdir -p "$cache"
+          run_cache="$cache/run-${GITHUB_RUN_ID}"
+          mkdir -p "$cache" "$run_cache"
 
           if command -v rustup >/dev/null 2>&1; then
             rustup toolchain install "$RUST_TOOLCHAIN_VERSION" --profile minimal \
@@ -146,11 +163,11 @@ jobs:
           fi
 
           if ! command -v just >/dev/null 2>&1; then
-            cargo install just --locked --root "$cache/just" --target-dir "$cache/install-target"
+            cargo install just --locked --root "$cache/just" --target-dir "$run_cache/install-target"
             echo "$cache/just/bin" >> "$GITHUB_PATH"
           fi
           if ! command -v cargo-nextest >/dev/null 2>&1; then
-            cargo install cargo-nextest --locked --root "$cache/nextest" --target-dir "$cache/install-target"
+            cargo install cargo-nextest --locked --root "$cache/nextest" --target-dir "$run_cache/install-target"
             echo "$cache/nextest/bin" >> "$GITHUB_PATH"
           fi
 
@@ -176,12 +193,12 @@ jobs:
           fi
           echo "$bun_dir/bin" >> "$GITHUB_PATH"
 
-          # Build state outlives the per-job workspace so the next run starts warm.
+          # Per-run build dirs avoid cancel-in-progress races on shared host caches.
           {
             echo "ZIG=$zig_dir/zig"
-            echo "ZIG_GLOBAL_CACHE_DIR=$cache/zig-cache"
-            echo "ZIG_LOCAL_CACHE_DIR=$cache/zig-cache"
-            echo "CARGO_TARGET_DIR=$cache/target"
+            echo "ZIG_GLOBAL_CACHE_DIR=$run_cache/zig-cache"
+            echo "ZIG_LOCAL_CACHE_DIR=$run_cache/zig-cache"
+            echo "CARGO_TARGET_DIR=$run_cache/target"
           } >> "$GITHUB_ENV"
 
       - name: verify toolchain
