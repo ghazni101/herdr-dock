@@ -1,0 +1,206 @@
+name: ci
+
+# Delivery CI for this fork runs on Forgejo Actions. The GitHub repository is a
+# mirror and runs none of this fork's CI, so this workflow replaces the previous
+# GitHub Actions workflow of the same name on the long-lived `dock` branch, where
+# custom work starts and lands. `master` stays identical to upstream
+# herdrdev/herdr and keeps upstream's own workflows.
+#
+# Ported jobs: the conventional-commits check and the Linux `check` job. The
+# Windows `windows-conpty-package` job and the Windows matrix entries cannot run
+# on the Linux runner and are not ported.
+#
+# Runs on the self-hosted Forgejo runner in host mode (label `ubuntu-24.04`),
+# which caps itself at 6 Cargo jobs so Forgejo and the other services keep
+# running alongside CI. Each job checks out with its own token. There is no
+# cache service: the runner keeps Rust, Cargo, Zig and Bun state under
+# ~/.cache/herdr-ci between runs, and dependency steps only install what the
+# pinned version needs.
+
+on:
+  pull_request:
+    branches: [dock]
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [dock]
+
+env:
+  RUST_TOOLCHAIN_VERSION: "1.96.1"
+  ZIG_VERSION: "0.16.0"
+  BUN_VERSION: "1.3.14"
+  # Keep file/line backtraces without generating type and variable debug information.
+  CARGO_PROFILE_DEV_DEBUG: "1"
+  CARGO_PROFILE_TEST_DEBUG: "1"
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "6"
+  GIT_TERMINAL_PROMPT: "0"
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Classifies the merge request and always reports a check, so a merge request
+  # never has an empty check list, including a docs-only one where `check` is
+  # skipped.
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - name: checkout
+        run: |
+          git clone --quiet "http://x:$GITHUB_TOKEN@${GITHUB_SERVER_URL#http://}/$GITHUB_REPOSITORY.git" .
+          git checkout --quiet "$GITHUB_SHA" 2>/dev/null || { git fetch --quiet origin "$GITHUB_REF"; git checkout --quiet FETCH_HEAD; }
+      - name: classify
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            git fetch --quiet origin "$BASE_REF"
+          fi
+          # --quiet exits 1 on a difference and >1 on an error; both take the
+          # else branch, so a diff failure cannot mark a merge request docs-only.
+          if git diff --quiet "$BASE_SHA"...HEAD -- . ':(exclude)**.md' ':(exclude)docs/**'; then
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "docs-only merge request: check is skipped"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  conventional-commits:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: checkout
+        run: |
+          git clone --quiet "http://x:$GITHUB_TOKEN@${GITHUB_SERVER_URL#http://}/$GITHUB_REPOSITORY.git" .
+          git checkout --quiet "$GITHUB_SHA" 2>/dev/null || { git fetch --quiet origin "$GITHUB_REF"; git checkout --quiet FETCH_HEAD; }
+
+      - name: validate merge request title
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if [ -z "$PR_TITLE" ]; then
+            echo "merge request event carried no title to validate" >&2
+            exit 1
+          fi
+          python3 scripts/conventional_commits.py "$PR_TITLE"
+
+      - name: validate pushed commit subjects
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          case "$BEFORE" in
+            ""|0000000000000000000000000000000000000000)
+              # A pushed branch without a parent commit has one subject to check.
+              python3 scripts/conventional_commits.py "$(git log -1 --format=%s "$AFTER")"
+              ;;
+            *)
+              python3 scripts/conventional_commits.py --range "$BEFORE..$AFTER"
+              ;;
+          esac
+
+  check:
+    name: check
+    needs: changes
+    if: ${{ needs.changes.outputs.code != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: checkout
+        run: |
+          git clone --quiet "http://x:$GITHUB_TOKEN@${GITHUB_SERVER_URL#http://}/$GITHUB_REPOSITORY.git" .
+          git checkout --quiet "$GITHUB_SHA" 2>/dev/null || { git fetch --quiet origin "$GITHUB_REF"; git checkout --quiet FETCH_HEAD; }
+
+      # Uses the pinned Rust, Zig and Bun versions the runner already provides,
+      # and installs only a missing dependency into the persistent runner cache.
+      - name: provision CI toolchain
+        run: |
+          set -eu
+          cache="${XDG_CACHE_HOME:-$HOME/.cache}/herdr-ci"
+          mkdir -p "$cache"
+
+          if command -v rustup >/dev/null 2>&1; then
+            rustup toolchain install "$RUST_TOOLCHAIN_VERSION" --profile minimal \
+              --component rustfmt --component clippy --no-self-update
+            toolchain_bin="$(dirname "$(rustup which --toolchain "$RUST_TOOLCHAIN_VERSION" rustc)")"
+            export PATH="$toolchain_bin:$PATH"
+            echo "$toolchain_bin" >> "$GITHUB_PATH"
+          else
+            rustc --version | grep -Fq "$RUST_TOOLCHAIN_VERSION" || {
+              echo "Rust $RUST_TOOLCHAIN_VERSION is required: provide rustup or the pinned toolchain on the runner" >&2
+              exit 1
+            }
+          fi
+
+          if ! command -v just >/dev/null 2>&1; then
+            cargo install just --locked --root "$cache/just" --target-dir "$cache/install-target"
+            echo "$cache/just/bin" >> "$GITHUB_PATH"
+          fi
+          if ! command -v cargo-nextest >/dev/null 2>&1; then
+            cargo install cargo-nextest --locked --root "$cache/nextest" --target-dir "$cache/install-target"
+            echo "$cache/nextest/bin" >> "$GITHUB_PATH"
+          fi
+
+          zig_dir="$cache/zig-$ZIG_VERSION"
+          if [ ! -x "$zig_dir/zig" ]; then
+            case "$(uname -m)" in
+              x86_64) zig_arch=x86_64 ;;
+              aarch64|arm64) zig_arch=aarch64 ;;
+              *) echo "unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
+            esac
+            tmp="$(mktemp -d)"
+            curl -fsSL "https://ziglang.org/download/$ZIG_VERSION/zig-$zig_arch-linux-$ZIG_VERSION.tar.xz" -o "$tmp/zig.tar.xz"
+            tar -xJf "$tmp/zig.tar.xz" -C "$tmp"
+            mv "$tmp/zig-$zig_arch-linux-$ZIG_VERSION" "$zig_dir"
+            rm -rf "$tmp"
+          fi
+          [ "$("$zig_dir/zig" version)" = "$ZIG_VERSION" ]
+          echo "$zig_dir" >> "$GITHUB_PATH"
+
+          bun_dir="$cache/bun-$BUN_VERSION"
+          if [ ! -x "$bun_dir/bin/bun" ]; then
+            curl -fsSL https://bun.sh/install | BUN_INSTALL="$bun_dir" bash -s "bun-v$BUN_VERSION"
+          fi
+          echo "$bun_dir/bin" >> "$GITHUB_PATH"
+
+          # Build state outlives the per-job workspace so the next run starts warm.
+          {
+            echo "ZIG=$zig_dir/zig"
+            echo "ZIG_GLOBAL_CACHE_DIR=$cache/zig-cache"
+            echo "ZIG_LOCAL_CACHE_DIR=$cache/zig-cache"
+            echo "CARGO_TARGET_DIR=$cache/target"
+          } >> "$GITHUB_ENV"
+
+      - name: verify toolchain
+        run: |
+          rustc --version
+          [ "$(rustc --version | cut -d' ' -f2)" = "$RUST_TOOLCHAIN_VERSION" ]
+          zig version
+          bun --version
+          just --version
+          cargo nextest --version
+
+      - name: run Linux lint
+        run: CARGO_INCREMENTAL=1 just lint
+
+      - name: run Linux tests
+        run: CARGO_INCREMENTAL=1 just ci-tests 'all()'
+
+      - name: check scalar libghostty with runtime safety
+        env:
+          LIBGHOSTTY_VT_SIMD: "false"
+          LIBGHOSTTY_VT_OPTIMIZE: ReleaseSafe
+        run: CARGO_INCREMENTAL=1 cargo nextest run --locked -E 'package(ghostty-vt) | test(ghostty)' --status-level fail --final-status-level fail --failure-output final --success-output never
