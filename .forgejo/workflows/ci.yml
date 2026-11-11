@@ -147,7 +147,13 @@ jobs:
           set -eu
           cache="${XDG_CACHE_HOME:-$HOME/.cache}/herdr-ci"
           run_cache="$cache/run-${GITHUB_RUN_ID}"
-          mkdir -p "$cache" "$run_cache"
+          mkdir -p "$cache"
+          for stale in "$cache"/run-*; do
+            [ -e "$stale" ] || continue
+            [ "$stale" = "$run_cache" ] && continue
+            rm -rf "$stale"
+          done
+          mkdir -p "$run_cache"
 
           if command -v rustup >/dev/null 2>&1; then
             rustup toolchain install "$RUST_TOOLCHAIN_VERSION" --profile minimal \
@@ -162,35 +168,50 @@ jobs:
             }
           fi
 
-          if ! command -v just >/dev/null 2>&1; then
-            cargo install just --locked --root "$cache/just" --target-dir "$run_cache/install-target"
-            echo "$cache/just/bin" >> "$GITHUB_PATH"
-          fi
-          if ! command -v cargo-nextest >/dev/null 2>&1; then
-            cargo install cargo-nextest --locked --root "$cache/nextest" --target-dir "$run_cache/install-target"
-            echo "$cache/nextest/bin" >> "$GITHUB_PATH"
-          fi
+          just_root="$cache/just"
+          (
+            flock 9
+            if [ ! -x "$just_root/bin/just" ]; then
+              cargo install just --locked --root "$just_root" --target-dir "$run_cache/install-target"
+            fi
+          ) 9>"$cache/just.lock"
+          echo "$just_root/bin" >> "$GITHUB_PATH"
+
+          nextest_root="$cache/nextest"
+          (
+            flock 9
+            if [ ! -x "$nextest_root/bin/cargo-nextest" ]; then
+              cargo install cargo-nextest --locked --root "$nextest_root" --target-dir "$run_cache/install-target"
+            fi
+          ) 9>"$cache/nextest.lock"
+          echo "$nextest_root/bin" >> "$GITHUB_PATH"
 
           zig_dir="$cache/zig-$ZIG_VERSION"
-          if [ ! -x "$zig_dir/zig" ]; then
-            case "$(uname -m)" in
-              x86_64) zig_arch=x86_64 ;;
-              aarch64|arm64) zig_arch=aarch64 ;;
-              *) echo "unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
-            esac
-            tmp="$(mktemp -d)"
-            curl -fsSL "https://ziglang.org/download/$ZIG_VERSION/zig-$zig_arch-linux-$ZIG_VERSION.tar.xz" -o "$tmp/zig.tar.xz"
-            tar -xJf "$tmp/zig.tar.xz" -C "$tmp"
-            mv "$tmp/zig-$zig_arch-linux-$ZIG_VERSION" "$zig_dir"
-            rm -rf "$tmp"
-          fi
+          (
+            flock 9
+            if [ ! -x "$zig_dir/zig" ]; then
+              case "$(uname -m)" in
+                x86_64) zig_arch=x86_64 ;;
+                aarch64|arm64) zig_arch=aarch64 ;;
+                *) echo "unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
+              esac
+              tmp="$(mktemp -d)"
+              curl -fsSL "https://ziglang.org/download/$ZIG_VERSION/zig-$zig_arch-linux-$ZIG_VERSION.tar.xz" -o "$tmp/zig.tar.xz"
+              tar -xJf "$tmp/zig.tar.xz" -C "$tmp"
+              mv "$tmp/zig-$zig_arch-linux-$ZIG_VERSION" "$zig_dir"
+              rm -rf "$tmp"
+            fi
+          ) 9>"$cache/zig-$ZIG_VERSION.lock"
           [ "$("$zig_dir/zig" version)" = "$ZIG_VERSION" ]
           echo "$zig_dir" >> "$GITHUB_PATH"
 
           bun_dir="$cache/bun-$BUN_VERSION"
-          if [ ! -x "$bun_dir/bin/bun" ]; then
-            curl -fsSL https://bun.sh/install | BUN_INSTALL="$bun_dir" bash -s "bun-v$BUN_VERSION"
-          fi
+          (
+            flock 9
+            if [ ! -x "$bun_dir/bin/bun" ]; then
+              curl -fsSL https://bun.sh/install | BUN_INSTALL="$bun_dir" bash -s "bun-v$BUN_VERSION"
+            fi
+          ) 9>"$cache/bun-$BUN_VERSION.lock"
           echo "$bun_dir/bin" >> "$GITHUB_PATH"
 
           # Per-run build dirs avoid cancel-in-progress races on shared host caches.
@@ -221,3 +242,10 @@ jobs:
           LIBGHOSTTY_VT_SIMD: "false"
           LIBGHOSTTY_VT_OPTIMIZE: ReleaseSafe
         run: CARGO_INCREMENTAL=1 cargo nextest run --locked -E 'package(ghostty-vt) | test(ghostty)' --status-level fail --final-status-level fail --failure-output final --success-output never
+
+      - name: cleanup run cache
+        if: always()
+        run: |
+          set -eu
+          cache="${XDG_CACHE_HOME:-$HOME/.cache}/herdr-ci"
+          rm -rf "$cache/run-${GITHUB_RUN_ID}"
