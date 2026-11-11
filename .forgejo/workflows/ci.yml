@@ -201,15 +201,18 @@ jobs:
 
           # Direct release zip + python zipfile: the bun.sh installer requires
           # system unzip, which this host-mode runner does not provide.
-          bun_dir="$cache/bun-$BUN_VERSION"
+          # x86_64 uses the baseline build: the default linux-x64 binary requires
+          # AVX2 and dies with SIGILL on this Forgejo runner VM's CPU. Cache
+          # path includes the target so a prior AVX2 install is not reused.
+          case "$(uname -m)" in
+            x86_64) bun_target=linux-x64-baseline ;;
+            aarch64|arm64) bun_target=linux-aarch64 ;;
+            *) echo "unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          bun_dir="$cache/bun-$BUN_VERSION-$bun_target"
           (
             flock 9
             if [ ! -x "$bun_dir/bin/bun" ]; then
-              case "$(uname -m)" in
-                x86_64) bun_target=linux-x64 ;;
-                aarch64|arm64) bun_target=linux-aarch64 ;;
-                *) echo "unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
-              esac
               tmp="$(mktemp -d)"
               curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v$BUN_VERSION/bun-$bun_target.zip" \
                 -o "$tmp/bun.zip"
@@ -220,7 +223,7 @@ jobs:
               chmod +x "$bun_dir/bin/bun"
               rm -rf "$tmp"
             fi
-          ) 9>"$cache/bun-$BUN_VERSION.lock"
+          ) 9>"$cache/bun-$BUN_VERSION-$bun_target.lock"
           [ "$("$bun_dir/bin/bun" --version)" = "$BUN_VERSION" ]
           echo "$bun_dir/bin" >> "$GITHUB_PATH"
 
