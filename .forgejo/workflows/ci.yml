@@ -199,13 +199,29 @@ jobs:
           [ "$("$zig_dir/zig" version)" = "$ZIG_VERSION" ]
           echo "$zig_dir" >> "$GITHUB_PATH"
 
+          # Direct release zip + python zipfile: the bun.sh installer requires
+          # system unzip, which this host-mode runner does not provide.
           bun_dir="$cache/bun-$BUN_VERSION"
           (
             flock 9
             if [ ! -x "$bun_dir/bin/bun" ]; then
-              curl -fsSL https://bun.sh/install | BUN_INSTALL="$bun_dir" bash -s "bun-v$BUN_VERSION"
+              case "$(uname -m)" in
+                x86_64) bun_target=linux-x64 ;;
+                aarch64|arm64) bun_target=linux-aarch64 ;;
+                *) echo "unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
+              esac
+              tmp="$(mktemp -d)"
+              curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v$BUN_VERSION/bun-$bun_target.zip" \
+                -o "$tmp/bun.zip"
+              python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
+                "$tmp/bun.zip" "$tmp"
+              mkdir -p "$bun_dir/bin"
+              mv "$tmp/bun-$bun_target/bun" "$bun_dir/bin/bun"
+              chmod +x "$bun_dir/bin/bun"
+              rm -rf "$tmp"
             fi
           ) 9>"$cache/bun-$BUN_VERSION.lock"
+          [ "$("$bun_dir/bin/bun" --version)" = "$BUN_VERSION" ]
           echo "$bun_dir/bin" >> "$GITHUB_PATH"
 
           # Per-run build dirs avoid cancel-in-progress races on shared host caches.
